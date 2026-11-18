@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import linha_voltar with context %}
+
+{% block titulo %}Lista de internos{% endblock %}
+
+{% block estilo %}
+    @media print { @page { size: A4 landscape; margin: 10mm; } }
+
+    /* pergunta da janela "Dar baixa": o prontuário em papel já voltou ao escritório? */
+    .pergunta { box-shadow: none; margin: 0 0 14px; padding: 0 0 14px; border: 0; background: none; }
+    .pergunta legend { float: none; width: auto; padding: 0 0 8px; margin: 0; font-size: .88rem; background: none; border: 0; border-radius: 0; }
+    .pergunta > :not(legend) { margin-left: 0; margin-right: 0; max-width: none; }
+    .opcao { flex-direction: row; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--borda); border-radius: var(--r-md);
+             font-size: .92rem; cursor: pointer; }
+    .opcao + .opcao { margin-top: 8px; }
+    .opcao input { width: auto; padding: 0; margin: 0; accent-color: var(--vermelho); }
+    .opcao:hover { border-color: var(--borda-forte); }
+    .opcao:has(input:checked) { border-color: var(--vermelho); background: var(--vermelho-claro); }
+    .opcao:has(input:focus-visible) { outline: 3px solid rgba(179,38,30,.3); outline-offset: 2px; }
+{% endblock %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('home')) }}
+  <div class="pagina-topo">
+    <div class="titulo">
+      <h1>Internos</h1>
+    </div>
+  </div>
+
+  <div class="ferramentas">
+    <div class="segmentado" id="filtro" role="group" aria-label="Situação">
+      <button type="button" data-valor="ativo">Ativos <span class="n" id="n-ativos">–</span></button>
+      <button type="button" data-valor="inativo">Inativos <span class="n" id="n-inativos">–</span></button>
+      <button type="button" data-valor="">Todos <span class="n" id="n-todos">–</span></button>
+    </div>
+    <label class="busca">
+      <svg class="icone"><use href="#i-busca"/></svg>
+      <input id="busca" type="search" placeholder="Buscar por nome, CPF, telefone…" aria-label="Buscar" autocomplete="off"
+             title="Várias palavras, em qualquer ordem: &quot;maria silva&quot; acha &quot;Maria da Silva&quot;. Números de CPF, RG, cartão SUS e telefone, com ou sem pontos. &quot;#123&quot; acha o registro nº 123.">
+    </label>
+    <select id="filtro-categoria" class="filtro-lista" aria-label="Categoria">
+      <option value="">Todas as categorias</option>
+      {% for c in categorias %}<option>{{ c }}</option>{% endfor %}
+    </select>
+    <select id="filtro-ano" class="filtro-lista" aria-label="Ano de início">
+      <option value="">Todos os anos</option>
+      {% for a in anos %}<option value="{{ a }}">Início em {{ a }}</option>{% endfor %}
+      {% if sem_data %}<option value="sem">Sem data de início</option>{% endif %}
+    </select>
+    <button type="button" class="botao pequeno secundario" id="limpar-filtros" hidden>Limpar filtros</button>
+  </div>
+
+  {% with msgs = get_flashed_messages() %}
+    {% if msgs %}<ul class="mensagens">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+  {% endwith %}
+  <div id="aviso" class="aviso" hidden></div>
+
+  <div class="moldura">
+    <table class="lista">
+      <thead>
+        <tr>
+          <!-- data-chave = campo do JSON usado para ordenar; data-tipo diz como comparar -->
+          <th data-chave="nome">Interno</th>
+          <th data-chave="categoria">Categoria</th>
+          <th data-chave="valor" data-tipo="numero">Contribuição</th>
+          <th data-chave="inicio">Início</th>
+          <th data-chave="previsao">Prev. término</th>
+          <th data-chave="termino">Saída</th>
+          <th data-chave="responsavel">Responsável</th>
+          <th data-chave="status_txt">Situação</th>
+          <th class="sem-ordem"></th>
+        </tr>
+      </thead>
+      <tbody id="linhas"></tbody>
+    </table>
+    <div id="vazio" class="vazio" hidden></div>
+  </div>
+  <div class="rodape-lista">
+    <p class="rodape"><span id="mostrando"></span><span class="ponto">·</span><span id="atualizado"></span></p>
+    <nav class="paginador" id="paginador" aria-label="Páginas da lista" hidden></nav>
+    <label class="por-pagina">Por página
+      <select id="por-pagina" aria-label="Registros por página">
+        {% for t in tamanhos %}<option value="{{ t }}"{{ ' selected' if t == tamanho_padrao }}>{{ t }}</option>{% endfor %}
+        <option value="todos">Todos (para imprimir)</option>
+      </select>
+    </label>
+  </div>
+</main>
+
+<!-- janela que aparece ao clicar em "Dar baixa" -->
+<dialog id="baixa">
+  <form id="form-baixa">
+    <h2>Dar baixa em <span id="baixa-nome"></span></h2>
+    <div class="grade">
+      <label class="c3">Data da saída *<input type="date" name="termino" required></label>
+      <label class="c3">Motivo *
+        <select name="motivo" required>
+          <option value="">—</option>
+          {% for m in motivos %}<option>{{ m }}</option>{% endfor %}
+        </select></label>
+    </div>
+    <fieldset class="pergunta">
+      <legend>O prontuário já voltou ao escritório? *</legend>
+      <label class="opcao"><input type="radio" name="prontuario_voltou" value="sim" required>Sim, já está no escritório</label>
+      <label class="opcao"><input type="radio" name="prontuario_voltou" value="nao">Não, ainda está na casa de acolhida</label>
+    </fieldset>
+    <p class="erro" id="baixa-erro" role="alert"></p>
+    <div class="botoes">
+      <button type="button" class="botao secundario" id="baixa-cancelar">Cancelar</button>
+      <button class="botao" id="baixa-confirmar">Dar baixa</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="{{ url_for('static', filename='tabela.js') }}"></script>
+<script nonce="{{ csp_nonce() }}">
+  const PODE = {{ permissoes_js() | tojson }};     // o que o nível de acesso da pessoa permite (permissoes.py): o resto não aparece
+  const filtro = new ControleSegmentado(document.getElementById("filtro"));
+  const filtroCategoria = document.getElementById("filtro-categoria");
+  const filtroAno = document.getElementById("filtro-ano");
+  const aviso = document.getElementById("aviso");
+
+  function mostrarAviso(partes, erro = false) {
+    aviso.className = "aviso" + (erro ? " erro" : "");
+    aviso.replaceChildren(...partes);
+    aviso.hidden = false;
+  }
+
+
+  // R$ 900,00 e, embaixo, quantas parcelas já foram pagas (a tabela precisa caber na tela)
+  function celulaContribuicao(i) {
+    const caixa = document.createElement("div");
+    caixa.append(i.valor_fmt);
+    if (i.parcelas) caixa.append(texto("span", `${i.parcelas} parcela${i.parcelas === 1 ? "" : "s"}`, "sub"));
+    return caixa;
+  }
+
+  // "Inativo (Desistência)" -> etiqueta "Inativo" e, embaixo, "Desistência"
+  function celulaSituacao(i) {
+    const [, rotulo, motivo] = String(i.status_txt).match(/^(.*?)\s*(?:\((.*)\))?$/);
+    const caixa = document.createElement("div");
+    caixa.append(selo(rotulo, i.status));
+    if (motivo) caixa.append(texto("span", motivo, "sub"));
+    return caixa;
+  }
+
+  // a busca, os filtros, a ordem e as páginas são feitos no servidor (busca_de_internos.py): o navegador pede só a página que mostra
+  const tabela = new TabelaPaginada({
+    url: "{{ url_for('api_internos_busca') }}",
+    campos: { situacao: filtro, categoria: filtroCategoria, ano: filtroAno },       // o que está escolhido fica na URL: o "voltar" o mantém
+    aoCarregar: dados => {              // os números das abas já levam em conta a busca e os outros filtros
+      document.getElementById("n-ativos").textContent = dados.contagens.ativo;
+      document.getElementById("n-inativos").textContent = dados.contagens.inativo;
+      document.getElementById("n-todos").textContent = dados.contagens.todos;
+    },
+    colunas: [
+      { celula: celulaPessoa },
+      { celula: i => chipCategoria(i.categoria, i.categoria_tipo), classe: "fixo" },
+      { celula: celulaContribuicao, classe: "num" },
+      { celula: i => dataOuMudo(i.inicio_fmt, "sem data"), classe: "fixo" },
+      { celula: i => dataOuMudo(i.previsao_fmt), classe: "fixo" },
+      { celula: i => dataOuMudo(i.termino_fmt), classe: "fixo" },
+      { celula: celulaResponsavel, classe: "livre" },
+      { celula: celulaSituacao, classe: "fixo" },
+      // só quem está ativo pode receber baixa
+      { celula: i => PODE.baixa && i.status === "ativo" ? botao("Dar baixa", () => perguntarBaixa(i), "botao pequeno secundario", "saida") : "",
+        classe: "fixo acao" },
+    ],
+  });
+
+  // ------------------------------------------------------------ dar baixa
+  const dialogo = document.getElementById("baixa");
+  const formBaixa = document.getElementById("form-baixa");
+  const erroBaixa = document.getElementById("baixa-erro");
+  const confirmar = document.getElementById("baixa-confirmar");
+  let emBaixa = null;
+
+  const hojeIso = () => {                       // data de hoje NO FUSO LOCAL (toISOString usaria UTC)
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  function perguntarBaixa(item) {
+    emBaixa = item;
+    formBaixa.reset();
+    erroBaixa.textContent = "";
+    document.getElementById("baixa-nome").textContent = item.nome;
+    formBaixa.termino.max = hojeIso();          // não deixa escolher data futura
+    formBaixa.termino.min = item.inicio || "";  // nem anterior à internação
+    formBaixa.termino.value = hojeIso();
+    dialogo.showModal();
+  }
+
+  document.getElementById("baixa-cancelar").addEventListener("click", () => dialogo.close());
+
+  formBaixa.addEventListener("submit", async e => {
+    e.preventDefault();
+    confirmar.disabled = true;                  // evita clique duplo
+    try {
+      const r = await fetch(`/internacoes/${emBaixa.id}/baixa`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.fromEntries(new FormData(formBaixa))),
+      });
+      const resp = await r.json();
+      if (!r.ok) { erroBaixa.textContent = Object.values(resp.erros).join(" "); return; }   // janela continua aberta
+      dialogo.close();
+      const partes = [`${emBaixa.nome} recebeu baixa: ${resp.status}, saída em ${resp.saida}. `];
+      if (resp.envelope === "pendente") partes.push("O prontuário ainda precisa voltar da casa de acolhida. ", link("Ver avisos", "{{ url_for('home') }}#avisos"), " · ");
+      mostrarAviso([...partes, link("Ver ficha", resp.ficha)]);
+      tabela.carregar();
+    } catch {
+      erroBaixa.textContent = "Não foi possível falar com o sistema. Tente de novo.";
+    } finally {
+      confirmar.disabled = false;
+    }
+  });
+
+  tabela.carregar();
+</script>
+{% endblock %}

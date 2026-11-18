@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import linha_voltar with context %}
+{% from "_abas_triagens.html" import abas %}
+{#
+  A lista de espera (fila.py): uma fila por categoria, em ordem de chamada, com as vagas a preencher no alto de cada uma.
+  Variáveis: retrato (fila.resumo: categorias, sem_categoria, total), hoje, resultados ({chave: (rótulo, oferece o dia de ligar de novo)}), com_retorno (as chaves que o oferecem),
+  pode_admitir (pode abrir o prontuário para internar). Quem registra triagens (permissão `triagem`) liga e reordena; todos veem.
+#}
+{% block titulo %}Lista de espera{% endblock %}
+
+{% block estilo %}
+  .fila-categoria { margin: 0 0 var(--e5, 22px); background: var(--superficie); border: 1px solid var(--borda); border-radius: var(--raio); box-shadow: var(--sombra); }
+  .fila-categoria > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 14px 18px; border-bottom: 1px solid var(--borda); }
+  .fila-categoria > header h2 { display: inline-flex; align-items: center; gap: 9px; margin: 0; font-size: 1.05rem; }
+  .fila-categoria > header .ponto { width: 11px; height: 11px; border-radius: 50%; background: var(--cor); box-shadow: inset 0 0 0 1px rgba(16,24,40,.12); flex: none; }
+  .fila-categoria > header .quantos { color: var(--suave); font-size: .9rem; }
+  .fila-categoria > header .vaga-aviso { margin-left: auto; }
+  .vaga-aviso { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 999px; font-size: .84rem; font-weight: 600; background: #f2f4f7; color: #475467; }
+  .vaga-aviso.chamar { background: var(--verde-claro); color: var(--verde); box-shadow: inset 0 0 0 1px var(--verde-borda); }
+  .vaga-aviso.excedida { background: var(--vermelho-claro); color: var(--vermelho); }
+  .fila-lista { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+  .fila-lista > li { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 14px 18px; border-top: 1px solid #f0f2f5; scroll-margin-top: calc(var(--topo-h, 60px) + 14px); }
+  .fila-lista > li:first-child { border-top: 0; }
+  .fila-lista > li:target { background: var(--info-suave); }
+  .fila-lista > li.proximo { background: var(--verde-claro); box-shadow: inset 4px 0 0 #34a853; }
+  .fila-lista > li.chamada { background: #fafbfc; }
+  .posicao { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: .95rem; background: #eef1f6; color: var(--neutro); font-variant-numeric: tabular-nums; }
+  li.proximo .posicao { background: #34a853; color: #fff; }
+  .fila-pessoa { min-width: 0; display: grid; gap: 5px; }
+  .fila-pessoa .nome { font-weight: 700; font-size: 1rem; overflow-wrap: anywhere; }
+  .fila-pessoa .nome a { color: inherit; text-decoration: none; }
+  .fila-pessoa .nome a:hover { text-decoration: underline; }
+  .fila-linha { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: .86rem; color: var(--suave); }
+  .fila-linha strong { color: var(--texto); font-weight: 600; }
+  .fila-linha a.tel { color: #1d4f9c; font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .fila-linha a.tel:hover { text-decoration: underline; }
+  .etiquetas { display: flex; flex-wrap: wrap; gap: 6px; }
+  .etiqueta { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px; font-size: .76rem; font-weight: 700; background: #f2f4f7; color: #475467; }
+  .etiqueta.verde { background: var(--verde-claro); color: var(--verde); }
+  .etiqueta.alerta { background: var(--vermelho-claro); color: var(--vermelho); }
+  .etiqueta.aviso { background: var(--amarelo); color: var(--ambar); }
+  .ultimo-contato { font-size: .86rem; }
+  .ultimo-contato small { color: var(--suave); }
+  details.historico { font-size: .84rem; }
+  details.historico > summary { cursor: pointer; color: var(--suave); font-weight: 600; width: fit-content; }
+  details.historico ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+  details.historico li { padding-left: 10px; border-left: 3px solid var(--borda); }
+  details.historico li small { display: block; color: var(--suave); }
+  .fila-acoes { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
+  .fila-acoes form { margin: 0; }
+  .menu-mais form { margin: 0; }
+  .menu-mais button:disabled { opacity: .45; cursor: default; }
+  .menu-mais button:disabled:hover { background: none; }
+  .vazio-fila { padding: 26px 20px; color: var(--suave); background: var(--superficie); border: 1px dashed var(--borda-forte); border-radius: var(--raio); }
+  .nota-sem-categoria { margin: 0; padding: 12px 18px; font-size: .88rem; color: var(--suave); background: #fafbfc; border-bottom: 1px solid var(--borda); }
+  dialog#contato { width: min(520px, calc(100vw - 24px)); }
+  dialog#contato .resultados { display: grid; gap: 6px; margin: 0 0 12px; min-width: 0; }
+  dialog#contato .resultados > p { margin: 0 0 2px; font-weight: 700; font-size: .9rem; }
+  dialog#contato .opcao { flex-direction: row; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid var(--borda-forte); border-radius: var(--r-md); cursor: pointer; font-size: .92rem; font-weight: 500; color: var(--texto); text-align: left; }
+  dialog#contato .opcao:has(input:checked) { border-color: var(--vermelho); background: #fdf2f2; }
+  dialog#contato .opcao input { width: auto; margin: 0; flex: none; }
+  dialog#contato label.campo { display: grid; gap: 4px; margin: 0 0 12px; font-size: .88rem; font-weight: 600; color: var(--suave); }
+  dialog#contato label.campo[hidden] { display: none; }
+  @media (max-width: 760px) {
+    .fila-lista > li { grid-template-columns: 36px minmax(0, 1fr); padding: 14px; }
+    .fila-acoes { grid-column: 1 / -1; justify-content: flex-start; }
+    .fila-categoria > header { padding: 12px 14px; }
+    .fila-categoria > header .vaga-aviso { margin-left: 0; }
+  }
+  @media print { .fila-acoes, .segmentado, .ferramentas, details.historico { display: none !important; } }
+{% endblock %}
+
+{% macro linha(e, destaque=false, ultimo=false) %}
+<li id="fila-{{ e.id }}" class="{{ 'proximo' if destaque }}{{ ' chamada' if e.chamada }}">
+  <span class="posicao" title="Posição na fila de {{ e.categoria or 'quem está sem categoria' }}">{{ e.posicao }}º</span>
+  <div class="fila-pessoa">
+    <div class="nome"><a href="{{ url_for('ficha', id=e.id) }}">{{ e.nome }}</a></div>
+    <div class="etiquetas">
+      {% if destaque %}<span class="etiqueta verde">Chamar agora</span>{% endif %}
+      {% if e.chamada and e.agendada %}<span class="etiqueta verde">Internação marcada para {{ e.agendada | data }}</span>
+      {% elif e.chamada %}<span class="etiqueta verde">Aceitou a vaga</span>{% endif %}
+      {% if e.retorno_vencido %}<span class="etiqueta alerta">Ligar de novo (combinado para {{ e.retornar_em | data }})</span>
+      {% elif e.aguardando %}<span class="etiqueta aviso">Ligar de novo em {{ e.retornar_em | data }}</span>{% endif %}
+    </div>
+    <div class="fila-linha"><span>Na fila desde {{ e.desde_fmt }} · <strong>{{ e.espera_txt }}</strong></span></div>
+    <div class="fila-linha">
+      {% for rotulo, numero, digitos in e.telefones %}<span>{{ rotulo }}: <a class="tel" href="tel:{{ digitos }}">{{ numero }}</a></span>{% else %}<span>Sem telefone cadastrado</span>{% endfor %}
+      {% if e.responsavel %}<span>Responsável: {{ e.responsavel }}</span>{% endif %}
+    </div>
+    {% if e.ultimo %}
+    <div class="ultimo-contato">Último contato: <strong>{{ resultados[e.ultimo.resultado][0] }}</strong>
+      <small>· {{ e.ultimo.quando.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ e.ultimo.por if e.ultimo.por }}{{ ' · ' ~ e.ultimo.observacao if e.ultimo.observacao }}</small></div>
+    {% else %}
+    <div class="ultimo-contato"><small>Ninguém ligou ainda.</small></div>
+    {% endif %}
+    {% if e.contatos | length > 1 %}
+    <details class="historico"><summary>Todos os contatos ({{ e.contatos | length }})</summary>
+      <ul>{% for c in e.contatos %}
+        <li>{{ resultados[c.resultado][0] }}{{ ' · ligar de novo em ' ~ (c.retornar_em | data) if c.retornar_em }}
+          <small>{{ c.quando.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ c.por if c.por }}{{ ' · ' ~ c.observacao if c.observacao }}</small></li>
+      {% endfor %}</ul>
+    </details>
+    {% endif %}
+  </div>
+  <div class="fila-acoes">
+    {% if pode('triagem') %}
+    <button type="button" class="botao{{ '' if destaque else ' secundario' }} pequeno" data-contato="{{ e.id }}" data-nome="{{ e.nome }}"><svg class="icone"><use href="#i-telefone"/></svg>Registrar contato</button>
+    {% endif %}
+    {% if e.chamada and pode_admitir %}<a class="botao pequeno" href="{{ url_for('formulario', pessoa=e.pessoa.id) }}"><svg class="icone"><use href="#i-ok"/></svg>Internar</a>{% endif %}
+    <details class="mais"><summary class="botao secundario pequeno" aria-label="Mais ações de {{ e.nome }}"><svg class="icone"><use href="#i-pontos"/></svg></summary>
+      <div class="menu-mais">
+        {% if pode('triagem') %}
+        {% for acao, rotulo in (('topo', 'Levar para o topo da fila'), ('subir', 'Subir uma posição'), ('descer', 'Descer uma posição')) %}
+        <form method="post" action="{{ url_for('mover_na_fila', id=e.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="acao" value="{{ acao }}">
+          <button type="submit"{{ ' disabled' if ((acao != 'descer' and e.posicao == 1) or (acao == 'descer' and ultimo)) }}>{{ rotulo }}</button></form>
+        {% endfor %}
+        <hr>
+        <a href="{{ url_for('editar_internacao', id=e.id) }}">Editar a triagem</a>
+        {% endif %}
+        <a href="{{ url_for('ficha', id=e.id) }}">Abrir a ficha</a>
+      </div></details>
+  </div>
+</li>
+{% endmacro %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('home')) }}
+  <div class="pagina-topo">
+    <div class="titulo">
+      <h1>Lista de espera</h1>
+      <p class="ajuda">Quem espera vaga, por categoria, em ordem de chamada. Posição em {{ hoje | data }}.</p>
+    </div>
+  </div>
+  {{ abas('fila', retrato.total) }}
+
+  {% with msgs = get_flashed_messages() %}
+    {% if msgs %}<ul class="mensagens">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+  {% endwith %}
+
+  {% if not retrato.total %}
+    <div class="vazio-fila">Ninguém na lista de espera. Quem a triagem manda esperar vaga entra aqui quando a situação da triagem muda para <strong>Lista de espera</strong> (em Triagens).</div>
+  {% endif %}
+
+  {% for c in retrato.categorias %}
+  <section class="fila-categoria" id="categoria-{{ c.categoria | urlencode }}" aria-label="Fila de {{ c.categoria }}">
+    <header>
+      <h2><i class="ponto tipo-{{ c.tipo }}"></i>{{ c.categoria }}</h2>
+      <span class="quantos">{{ c.entradas | length }} esperando</span>
+      {% if c.a_chamar and c.proximos %}
+        <span class="vaga-aviso chamar">{{ c.a_chamar }} vaga{{ '' if c.a_chamar == 1 else 's' }} para preencher: chamar {{ c.proximos | length }}</span>
+      {% elif c.a_chamar %}
+        <span class="vaga-aviso chamar">{{ c.a_chamar }} vaga{{ '' if c.a_chamar == 1 else 's' }} para preencher (todos já chamados ou combinaram ligar mais tarde)</span>
+      {% elif c.livres %}
+        <span class="vaga-aviso">{{ c.livres }} vaga{{ '' if c.livres == 1 else 's' }} livre{{ '' if c.livres == 1 else 's' }}, já reservada{{ '' if c.livres == 1 else 's' }}</span>
+      {% elif c.vaga and c.vaga.limite is none %}
+        <span class="vaga-aviso">Limite de vagas não definido</span>
+      {% elif c.vaga and c.vaga.situacao == 'excedida' %}
+        <span class="vaga-aviso excedida">{{ c.vaga.texto }}</span>
+      {% else %}
+        <span class="vaga-aviso">Sem vaga livre</span>
+      {% endif %}
+    </header>
+    <ol class="fila-lista">
+      {% for e in c.entradas %}{{ linha(e, e in c.proximos, loop.last) }}{% endfor %}
+    </ol>
+  </section>
+  {% endfor %}
+
+  {% if retrato.sem_categoria %}
+  <section class="fila-categoria" id="sem-categoria" aria-label="Quem está sem categoria definida">
+    <header>
+      <h2><i class="ponto tipo-outro"></i>Sem categoria definida</h2>
+      <span class="quantos">{{ retrato.sem_categoria | length }} esperando</span>
+    </header>
+    <p class="nota-sem-categoria">O convênio ainda está "a definir": sem ele não dá para saber para qual vaga chamar. Defina-o em <strong>Editar a triagem</strong> e a pessoa passa para a fila da categoria dela.</p>
+    <ol class="fila-lista">
+      {% for e in retrato.sem_categoria %}{{ linha(e, false, loop.last) }}{% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+</main>
+
+{% if pode('triagem') %}
+<dialog id="contato">
+  <form method="post" id="form-contato">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <h2>Contato com <span id="contato-nome"></span></h2>
+    <div class="resultados" role="radiogroup" aria-labelledby="titulo-resultado">
+      <p id="titulo-resultado">Como foi o contato? *</p>
+      {% for chave, (rotulo, retorno) in resultados.items() %}
+      <label class="opcao"><input type="radio" name="resultado" value="{{ chave }}" required>{{ rotulo }}</label>
+      {% endfor %}
+    </div>
+    <label class="campo" id="campo-retorno" hidden>Ligar de novo em
+      <input type="date" name="retornar_em" min="{{ hoje.isoformat() }}"></label>
+    <label class="campo">Observação
+      <textarea name="observacao" rows="3" maxlength="300" placeholder="Ex.: atendeu a mãe; disse que ele volta do trabalho às 18h"></textarea></label>
+    <div class="botoes">
+      <button class="botao secundario" formmethod="dialog" formnovalidate>Cancelar</button>
+      <button class="botao">Registrar contato</button>
+    </div>
+  </form>
+</dialog>
+
+<script nonce="{{ csp_nonce() }}">
+  (function () {
+    const dialogo = document.getElementById("contato");
+    if (!dialogo) return;
+    const form = document.getElementById("form-contato");
+    const campoRetorno = document.getElementById("campo-retorno");
+    const COM_RETORNO = {{ com_retorno | tojson }};
+    const atualizarRetorno = () => {
+      const escolhido = form.querySelector('input[name="resultado"]:checked');
+      const oferece = !!escolhido && COM_RETORNO.includes(escolhido.value);
+      campoRetorno.hidden = !oferece;
+      if (!oferece) form.retornar_em.value = "";
+    };
+    form.addEventListener("change", atualizarRetorno);
+    document.querySelectorAll("[data-contato]").forEach(botao => {
+      botao.addEventListener("click", () => {
+        form.reset();
+        form.setAttribute("action", `/fila/${botao.dataset.contato}/contato`);
+        document.getElementById("contato-nome").textContent = botao.dataset.nome;
+        atualizarRetorno();
+        dialogo.showModal();
+      });
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

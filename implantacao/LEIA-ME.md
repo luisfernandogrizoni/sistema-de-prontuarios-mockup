@@ -1,0 +1,375 @@
+# Servidor do escritório (Windows)
+
+Um computador do escritório guarda o banco e roda o sistema; os outros usam pelo navegador, em
+`http://IP-DO-SERVIDOR:8000`, cada pessoa com o seu usuário. Não custa nada e os dados não saem do escritório.
+
+Funciona dentro da rede do escritório e, com o Tailscale (parte 5), também pelo celular e pelo segundo polo, sempre com HTTPS. O banco
+fica num único lugar: o backup (parte 3) é o que protege contra disco queimado, vírus ou arquivo apagado sem querer.
+
+## Antes de começar
+
+- **Python 3.10 ou mais novo** (python.org) e **Git**. O "python" que vem da Microsoft Store não serve.
+- Um **HD externo ou pendrive grande** para os backups, sempre ligado ao servidor. Backup no mesmo disco do banco
+  protege de erro, não de pane no disco.
+- Se der, **cabo de rede** no servidor: Wi-Fi funciona, mas cai mais.
+- Uma pessoa responsável por ligar, atualizar e conferir o backup.
+
+## 1. Instalar (uma vez)
+
+Use uma pasta **separada** da de desenvolvimento, para mexer no código não afetar o sistema do escritório:
+
+```powershell
+git clone https://github.com/luisfernandogrizoni/sistema-de-prontuarios-mockup C:\prontuario
+```
+
+Se o repositório for **privado** (o do servidor real é), na primeira vez o Git abre o navegador para você entrar no GitHub (o Windows guarda o acesso, e as
+atualizações seguintes não pedem de novo). Faça esse `git clone` com o mesmo usuário do Windows que vai rodar o `atualizar.ps1`.
+Abra o PowerShell **como administrador** (botão direito > Executar como administrador). Primeiro só veja o que será feito:
+
+```powershell
+cd C:\prontuario
+powershell -ExecutionPolicy Bypass -File implantacao\instalar.ps1 -SoVer -PastaBackup "E:\backup-prontuario"
+```
+
+Depois instale de verdade (troque a pasta de backup e o caminho do banco atual):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File implantacao\instalar.ps1 -PastaBackup "E:\backup-prontuario" -BancoAtual "C:\caminho\do\projeto\instance\internos.db"
+```
+
+O instalador cria o ambiente do Python, leva os dados do banco atual (uma cópia consistente, sem apagar o original),
+libera a porta 8000 no firewall **só para a rede local**, impede o computador de suspender, e cria duas tarefas do Windows:
+**Prontuario - servidor** (liga sozinho quando o computador ligar e religa se cair) e **Prontuario - backup diario** (18:30).
+Ele liga o sistema, faz o primeiro backup e mostra os endereços para os outros computadores.
+
+As tarefas rodam como o usuário SISTEMA do Windows, para subir sem ninguém logado. Por isso o banco (`instance`) e os
+registros (`logs`) ficam com acesso só do SISTEMA, dos administradores e de quem instalou.
+
+## 2. O que fazer à mão depois
+
+0. **Identidade da instituição.** Nada a copiar: o nome, a logo, o timbre e os textos dos documentos vêm do pacote de identidade que acompanha o código
+   (`identidades\<instituição>`; sem ele, o genérico `identidades\generica`) e o sistema o usa sozinho. Veja `docs\identidade.md`.
+1. **IP fixo.** Se o IP do servidor mudar, os favoritos dos outros computadores quebram. Entre no painel do roteador
+   (geralmente `192.168.0.1` ou `192.168.1.1`, o "gateway" que o `ipconfig` mostra) e crie uma *reserva de DHCP* (ou
+   "IP fixo") para este computador.
+2. **Windows Update.** Configurações > Windows Update > Opções avançadas > *Horário ativo*: marque o horário do
+   expediente, para o computador não reiniciar no meio do dia. Reiniciar de madrugada é seguro: o sistema volta sozinho.
+3. **Usuários.** Cada pessoa tem o seu, com senha própria de no mínimo 10 caracteres. Só o primeiro usuário (o seu) é
+   criado pelo terminal; o resto é feito dentro do sistema:
+
+   ```powershell
+   cd C:\prontuario
+   .\.venv\Scripts\python.exe -m flask --app app criar-usuario luis
+   ```
+
+   Entre com ele, abra *Cadastros > Funcionários*, edite o seu cadastro e, em *Acesso ao sistema*, escolha o seu usuário
+   em *Usuário de login* (o seu cadastro é o do nível Administrador). Daí em diante só o administrador cria usuários:
+   em *Novo funcionário* (ou editando a pessoa), preencha *Criar um usuário novo*, a senha e o **e-mail** da pessoa (obrigatório
+   para quem vai ter acesso; não pode se repetir entre funcionários). A senha que o administrador define é **provisória**: no
+   primeiro acesso a pessoa é levada à troca e escolhe a dela e, **em seguida, confirma o e-mail** com o código que chega nele
+   (o sistema só abre depois disso; quem já tinha acesso antes não é barrado). A pessoa pode entrar digitando o usuário **ou** o
+   e-mail já confirmado. O sistema barra
+   senhas fáceis de adivinhar (`1234567890`, `senha2024`, o nome da pessoa...); uma frase de várias palavras serve.
+4. **Ligar o e-mail do sistema** (código de confirmação, "esqueci minha senha", avisos de segurança e o aviso da troca do
+   pen-drive). Uma vez, como Administrador, neste computador:
+
+   ```powershell
+   cd C:\prontuario
+   powershell -ExecutionPolicy Bypass -File implantacao\configurar-email.ps1
+   ```
+
+   O script pergunta a **senha da caixa de envio** (por exemplo `sistema@example.org`). Ela é digitada aqui, **não
+   aparece na tela** e fica só em `instance\email.json` (protegido como o resto da pasta `instance`): nunca a escreva em arquivo
+   do projeto, no GitHub nem em conversa. Depois o script manda um e-mail de teste para o endereço que você informar. Se não
+   chegar, confira a senha e rode de novo. Sem isto o sistema funciona normalmente, só não manda e-mail.
+5. **Cada pessoa confirma o seu e-mail**: clicando no nome (no topo) abre *Minha segurança*; *Enviar o código de confirmação*,
+   e digitar o código que chegou ao e-mail dela. Sem e-mail confirmado ela não consegue usar *Esqueci minha senha*.
+6. **Segundo fator do administrador.** Em *Minha segurança > Ativar o aplicativo autenticador*: instale no celular o Google
+   Authenticator (ou Microsoft Authenticator, ou Authy), leia o QR code, digite o código que o app mostra e **imprima ou
+   anote os 8 códigos de recuperação** (aparecem uma vez só; guarde fora do computador, junto da frase do backup). Dali em
+   diante a entrada pede a senha e o código do app. Celular perdido: use um código de recuperação, ou, no servidor,
+   `.\.venv\Scripts\python.exe -m flask --app app desativar-segundo-fator luis`.
+7. **Manutenção** (uma vez, como Administrador, no servidor): `implantacao\auditar-dependencias.ps1 -Agendar` confere as bibliotecas do sistema
+   contra a lista pública de vulnerabilidades e agenda a conferência mensal; `implantacao\verificar-servidor.ps1` confere o Windows (disco
+   criptografado, atualizações, antivírus, portas) e deve ser repetido a cada 3 meses. O passo a passo do que só você pode fazer (roteador, contas do
+   Windows, sala, impressora) está em `implantacao\ROTEIRO-DO-WINDOWS-E-DA-REDE.md`. A página inicial avisa o administrador quando algo vence.
+8. **Polo de cada funcionário** (depois da atualização que trouxe os dois polos, uma vez, como Administrador): *Cadastros > Funcionários*, editar cada pessoa e
+   escolher o **Polo de trabalho**, *Escritório* (administrador, assistente social, equipe administrativa) ou *Saúde* (enfermagem, psicologia, medicina, nutrição e
+   coordenação). Enquanto uma pessoa está *Não definido*, valem para ela só os níveis de acesso, como antes, e a página inicial do administrador lembra de quem
+   falta. Depois de definidos: a triagem é só do Escritório; cadastrar prontuário e admitir é do Escritório e da enfermeira(o); dar baixa é só da enfermeira(o) (o
+   Escritório continua registrando a chegada do envelope); a assistente social recebe a cobrança do relatório de alta. Detalhes em `docs\polos-e-notificacoes.md`.
+9. **Testar** a partir de outro computador: abra o endereço que o instalador mostrou e entre. Salve como favorito.
+10. **Aposente o banco antigo.** Depois de conferir que os dados estão no servidor, renomeie o `instance\internos.db` do
+   projeto de desenvolvimento (por exemplo para `internos_ANTIGO_nao_usar.db`). Dois bancos em uso ao mesmo tempo
+   significam dados espalhados e perdidos.
+
+## 3. Backup
+
+- Todo dia às 18:30 (ou, se o computador estava desligado, assim que ligar) o `backup.py` copia o banco para a pasta
+  escolhida e guarda as últimas **30 cópias**. A cópia é conferida depois de feita; só vale se estiver íntegra.
+- **A página inicial avisa** ("Backup do banco") se passarem mais de 3 dias sem backup. Quando aparecer, veja
+  `C:\prontuario\logs\backup.log`: o motivo mais comum é o HD externo desconectado.
+- Para fazer um backup na hora: `.\.venv\Scripts\python.exe backup.py`.
+- Os arquivos desta pasta (`internos-*.db`) têm **dados pessoais** e **não são criptografados**: guarde o HD em lugar
+  fechado e não envie para Drive/OneDrive. Eles protegem de erro e de arquivo estragado; **não** protegem de roubo, incêndio
+  ou vírus que atinjam o computador e o HD juntos. Para isso existe a cópia externa, abaixo.
+- **Nunca copie `internos.db` na mão** com o sistema ligado; use o `backup.py`.
+
+### Cópia externa criptografada, em dois pen-drives em rodízio
+
+Um pen-drive só não basta: se ele fica plugado, um vírus, um roubo ou um incêndio levam o banco e a cópia juntos; pen-drive
+barato falha sem avisar; e, enquanto grava, ele é a única cópia fora do computador. Por isso são **dois**: um fica plugado
+no servidor e o outro **guardado, trancado** (a gaveta trancada do escritório foi a escolha da casa), e **trocam de lugar toda
+semana**. A gaveta protege de vírus, de erro e de pen-drive que estraga; **não protege de incêndio, alagamento nem de roubo do
+escritório inteiro**. Se um dia der, levar o pen-drive guardado para casa uma vez por mês resolve isso.
+
+- A cópia vai **criptografada** (AES-256) e **conferida na hora**: o sistema abre o arquivo de novo e confere o banco. Quem
+  achar o pen-drive não lê nada. Ficam as cópias dos últimos 14 dias, uma por semana nas 8 semanas seguintes e uma por mês
+  até 1 ano.
+- A chave é uma **frase de recuperação** de 24 letras e números. Ela aparece **uma única vez**, na configuração: anote **em
+  papel** e guarde fora do computador (não tire foto, não salve em arquivo). **Sem ela as cópias dos pen-drives não abrem.**
+
+**Configurar (uma vez)**, no servidor, com o PowerShell **como administrador**:
+
+```powershell
+cd C:\prontuario
+powershell -ExecutionPolicy Bypass -File implantacao\configurar-backup-externo.ps1
+```
+
+Ele mostra a frase (anote!), guarda uma cópia dela no servidor (só o SISTEMA e os administradores leem; é o que deixa a tarefa
+automática criptografar) e cria a tarefa **Prontuario - copia externa** (das 8h às 20h, de hora em hora). Depois, **prepare
+cada pen-drive**, um de cada vez, com ele plugado (veja a letra no Explorador de Arquivos):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File implantacao\configurar-backup-externo.ps1 -PrepararMidia E: -Nome A
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File implantacao\configurar-backup-externo.ps1 -PrepararMidia F: -Nome B
+```
+
+O sistema reconhece cada pen-drive pelo código da pastinha `prontuario-backup` que ele ganha, em qualquer porta ou letra.
+Nunca é usado o disco do próprio computador.
+
+**Rotina semanal (5 minutos):** na **sexta, depois das 18:30**, tire o pen-drive que está plugado, guarde-o na gaveta trancada e
+plugue o outro. Quem troca não precisa lembrar sozinho: na sexta (e em qualquer dia, se a troca ficou para trás) a **página
+inicial** abre um pop-up **"Hora de trocar o pen-drive do backup"**, uma vez por dia em cada computador, até a troca ser feita;
+na sexta de manhã ele manda esperar até as 18:45, quando o backup do dia termina. Além disso, a página inicial avisa quando o
+mesmo pen-drive passa de 7 dias plugado, quando falta plugar o pen-drive (mais de 3 dias sem cópia) e quando os dois estão plugados ao mesmo tempo. A tela
+**Cadastros > Backup** (só o administrador) mostra cada pen-drive, desde quando está plugado e a última cópia.
+
+**Teste de restauração (a cada 3 meses):** com um pen-drive plugado, no servidor:
+
+```powershell
+cd C:\prontuario
+.\.venv\Scripts\python.exe backup.py --testar-restauracao
+```
+
+Digite a frase **do papel**. O teste abre a cópia mais nova e confere o banco: prova que o papel está certo e que o backup
+serve. A página inicial cobra o primeiro teste depois de 7 dias e um novo a cada ~100 dias.
+
+**Se o computador morrer**, ou para restaurar: `implantacao\RESTAURAR.md` (imprima e guarde junto da folha da frase).
+
+**Restaurar** do backup do dia (com o sistema parado; para restaurar de um pen-drive, veja `RESTAURAR.md`):
+
+```powershell
+Stop-ScheduledTask "Prontuario - servidor"
+Copy-Item "E:\backup-prontuario\internos-AAAA-MM-DD_HHMMSS.db" C:\prontuario\instance\internos.db -Force
+Start-ScheduledTask "Prontuario - servidor"
+```
+
+Teste isso uma vez com o sistema funcionando bem, para saber que funciona antes de precisar.
+
+## 4. Atualizar o sistema
+
+Depois que uma mudança for juntada no `main` do GitHub, no servidor (PowerShell como administrador):
+
+```powershell
+cd C:\prontuario
+powershell -ExecutionPolicy Bypass -File implantacao\atualizar.ps1
+```
+
+Faz um backup (e **cancela se o backup falhar**), para o sistema, baixa a versão nova, instala o que mudou e liga de novo.
+O banco se atualiza sozinho na subida. Se algo falhar, o sistema volta a ligar na versão que estava.
+
+**Depois da atualização que trouxe a ficha de saúde** (uma vez, em *Cadastros > Funcionários*, o administrador): em cada funcionário, escolha a *Função na
+equipe* e o *Registro profissional* (a enfermeira: *Enfermeiro(a)* e o COREN completo, como `COREN-SP 123.456-ENF`; quem já tinha a marca do Serviço Social
+já aparece como *Assistente social*) e marque *Lê os relatórios sigilosos* só em quem precisa ler, sem editar, o acolhimento social e a ficha de saúde (a
+psicóloga, a gerente técnica). Sem isso, só o administrador abre esses relatórios. A ficha de saúde abre na ficha de quem já foi internado.
+Os relatórios não têm mais adendos: depois de finalizados, a assistente social e a enfermeira os alteram direto, e cada alteração fica no *Histórico de versões*
+da ficha do acolhido (só o administrador vê). Os adendos que já existiam passam sozinhos para esse histórico na subida: nada se perde.
+
+**Depois da atualização que trouxe a identidade por pacote** (se o repositório do servidor for **privado**, UM passo à mão, ANTES de atualizar): o `git pull` precisa de login. No PowerShell, em `C:\prontuario`, rode `git pull` uma vez e entre no GitHub quando o navegador abrir (o Windows guarda o acesso). Depois
+rode `implantacao\atualizar.ps1` como sempre. O pacote da instituição vem junto do código: nada a copiar. As logos e o timbre deixaram de ser
+arquivos soltos de `static`; nos documentos já emitidos nada muda. A cor laranja dos convênios passa a se chamar `laranja` (o banco é ajustado sozinho na subida).
+
+**Depois da atualização que trouxe a lista de espera** (nada a fazer à mão): a tela **Lista de espera** (abas ao lado de *Triagens*) mostra uma fila por categoria em ordem de chegada, as vagas a
+preencher e quem chamar, e cada tentativa de contato fica registrada (`docs\lista-de-espera.md`). Quem já estava na lista entra com a data do 1º contato. O ideal é conferir, em cada categoria, a
+ordem da fila e, onde precisar, usar **Levar para o topo / Subir / Descer** no menu ⋯. Para quem vai receber o aviso de vaga aberta (sino): o Escritório e o administrador.
+
+**Importar ex-residentes de pastas e planilhas antigas** (só quando houver uma lista pronta): `importar_historico.py` lê a lista, simula, e só grava com `--gravar`,
+depois do backup e de você digitar SIM. Passo a passo, formato da lista e como desfazer um lote em `docs\importacao-historico.md`. O `requirements.txt` ganhou o
+`openpyxl`: a atualização o instala sozinha. Depois de importar, o administrador completa cada registro com o prontuário de papel pela tela **Para conferir** (item do menu só dele, com o número dos
+que faltam). **Enquanto um registro importado não é conferido, só o administrador o vê**: para os outros funcionários ele não aparece em lista, busca, relatório, página inicial nem ficha;
+ao marcar como conferido, passa a aparecer para todos (`docs\importacao-historico.md`).
+
+## 5. HTTPS pelo Tailscale: senha criptografada, celular e segundo polo
+
+Hoje o endereço é `http://IP:8000`: a senha e as fichas viajam **sem criptografia** pela rede do escritório. O **Tailscale** é uma rede
+privada gratuita que liga os seus aparelhos (computadores e celulares) e entrega ao sistema um endereço **com cadeado**
+(`https://servidor.tailXXXX.ts.net`) que todos os navegadores e celulares aceitam sem instalar certificado. Não abre porta no roteador e
+o sistema continua sem aparecer na internet. É também o caminho do segundo polo e do celular fora do escritório.
+
+**Antes de começar**
+
+- A conta do Tailscale é a chave de toda a rede. Crie com um e-mail da casa e **ative a verificação em duas etapas na conta** (no Google ou
+  Microsoft que você usar para entrar). Quem entrar nessa conta consegue ligar aparelhos novos na rede.
+- O plano gratuito (Personal) é para **uso não comercial**. Confira em tailscale.com/pricing se a casa se enquadra; se não, há plano
+  pago e desconto para entidades sem fins lucrativos.
+- Ao ligar o HTTPS, o **nome do computador e da rede ficam públicos** nos registros de certificados (qualquer pessoa pode ver). Use nomes
+  neutros (por exemplo `servidor`); nada com nome de paciente.
+
+**Passo a passo**
+
+1. **No servidor**: baixe o Tailscale para Windows (tailscale.com/download), instale e entre na conta.
+2. **No painel** (login.tailscale.com/admin):
+   - em *DNS*, confira que o *MagicDNS* está ligado e, em *HTTPS Certificates*, clique em **Enable HTTPS** (concordando com a
+     publicação dos nomes);
+   - em *Machines*, renomeie o computador do servidor para algo neutro (`servidor`) e, no menu `...` dele, escolha **Disable key
+     expiry** (senão o servidor sai da rede depois de alguns meses).
+3. **No servidor**, como Administrador:
+
+   ```powershell
+   cd C:\prontuario
+   powershell -ExecutionPolicy Bypass -File implantacao\configurar-https.ps1
+   ```
+
+   O script confere o Tailscale, liga o HTTPS, grava o modo (`instance\rede.json`), religa o sistema, passa o endereço novo para os links
+   dos e-mails e testa o endereço. No fim mostra **o endereço do sistema** (`https://servidor.tailXXXX.ts.net`).
+4. **Em cada computador do escritório, no polo 2 e em cada celular**: instale o Tailscale, entre na **mesma conta**, abra o endereço
+   `https://...ts.net` no navegador e salve como favorito. (No celular, ligue o Tailscale e abra o endereço.) Neste primeiro momento o
+   endereço antigo (`http://IP:8000`) continua funcionando: dá para migrar um computador de cada vez.
+5. **Conferir**: entre pelo endereço novo e abra *Cadastros > Auditoria*. Na coluna do endereço deve aparecer um número `100.x.x.x` (o
+   aparelho de quem entrou), e não `127.0.0.1`. Enquanto a página inicial mostrar o aviso "Segurança da rede", falta fechar o passo 6.
+6. **Quando todos já usam o endereço novo**, feche o http da rede local (quem não tem o Tailscale deixa de abrir):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File implantacao\configurar-https.ps1 -FecharHttp
+   ```
+
+   Agora o sistema só atende por dentro do Tailscale, o cookie do login passa a ser só-HTTPS e o navegador passa a exigir HTTPS no
+   endereço novo.
+
+**Manter os dois acessos (escolha da casa).** Dá para deixar `http://IP:8000` para os computadores do escritório e o endereço `https` do
+Tailscale só para quem está fora (polo 2, celular): é o modo `misto`, sem o passo 6. Rode `configurar-https.ps1 -ManterOsDois` e a página
+inicial deixa de lembrar de fechar o http. O que se perde: **a senha de quem entra pelo http continua viajando sem criptografia na rede do
+escritório** (e o cookie do login dele não é só-HTTPS). Cuidados: Wi-Fi do escritório com senha forte e visitantes em outra rede; quem mexe
+com coisas mais sensíveis, **principalmente o administrador, entra pelo endereço https** mesmo estando no escritório (basta ter o Tailscale
+no computador dele); reserve o IP de cada computador no roteador (se o IP mudar, a pessoa recebe o aviso de "aparelho novo").
+
+**Se algo não der certo**
+
+- No **próprio servidor**, `http://127.0.0.1:8000` abre sempre, em qualquer modo.
+- Para voltar ao que era (http na rede local, sem HTTPS): `powershell -ExecutionPolicy Bypass -File implantacao\configurar-https.ps1 -Desfazer`.
+- O endereço https não abre: o Tailscale está ligado nesse aparelho (ícone perto do relógio, ou o app no celular)? Está na **mesma conta**?
+- O script diz que o HTTPS não está ligado: faltou o *Enable HTTPS* do passo 2.
+- Se a internet cair, o Tailscale costuma continuar ligando aparelhos que já se conheciam, mas não é garantido. Por isso o passo 6 só deve
+  ser dado quando o HTTPS já estiver rodando bem há alguns dias; e o `-Desfazer` está sempre à mão.
+- O certificado é do Tailscale e **se renova sozinho**. Nada a fazer.
+
+**Segundo polo e celular fora do escritório (fase 10).** É o mesmo caminho: cada pessoa instala o Tailscale no aparelho dela e abre o
+mesmo endereço `https://...ts.net`. O sistema é um só, com um banco só: os dois polos veem o que o outro registrou na hora.
+
+*Antes de liberar* (o computador do escritório passa a ser o ponto único: se ele ou a internet de lá cair, o polo 2 para):
+
+1. O HTTPS rodando bem (passos 1 a 5 acima) e, de preferência, o http da rede local fechado (`-FecharHttp`).
+2. O backup externo em dia (parte 3): a tela *Cadastros > Backup* sem aviso.
+3. **Cada pessoa do polo 2 cadastrada** em *Cadastros > Funcionários*, com o e-mail dela e o nível certo (Operador ou Consulta). Os
+   computadores do polo precisam ser da instituição (é o que a casa combinou: nada de computador pessoal).
+4. **O administrador com o aplicativo autenticador ligado**: a partir do modo `misto`, o sistema só abre para o administrador depois disso
+   (a tela "Ligue o aplicativo autenticador" aparece sozinha). Se for preciso desligar a exigência (administrador sem celular, e só
+   enquanto isso durar), coloque `"segundo_fator_do_administrador": false` em `instance\rede.json`.
+
+*Como ligar*
+
+1. No painel do Tailscale (*Users > Invite users*), **convide cada pessoa do polo 2 pelo e-mail dela**: cada uma entra com a **própria**
+   conta (Google ou Microsoft) e os aparelhos dela ficam no nome dela. Não compartilhe a conta da casa com o polo 2. O plano gratuito aceita
+   até 6 usuários (confira em tailscale.com/pricing).
+2. **Limite o que cada aparelho alcança.** Por padrão, todo aparelho da rede alcança todos os outros, e um computador infectado do polo 2
+   chegaria aos computadores do escritório. No servidor, rode:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File implantacao\configurar-https.ps1 -MostrarPolitica
+   ```
+
+   e cole o texto que ele mostra em login.tailscale.com/admin/acls (use *Preview rules* antes de salvar). O efeito: **cada aparelho só alcança
+   o servidor, e só na porta 443** (o sistema); nenhum alcança os outros.
+3. No polo 2: instalar o Tailscale, entrar com a conta convidada e abrir o endereço https.
+
+*No dia a dia*
+
+- Quando alguém entra por um **aparelho que ainda não tinha usado**, ela recebe um e-mail ("Entrada por um aparelho novo", com o endereço do
+  aparelho e o que fazer se não foi ela); no caso do administrador, o e-mail principal da casa também. Fica na auditoria como "Entrou por um
+  aparelho que ainda não tinha usado". Ao migrar para o endereço novo, cada pessoa recebe esse aviso uma vez.
+- **Quem sai da casa**: desativar o funcionário (o acesso cai na hora) **e** remover a pessoa no painel do Tailscale.
+- **Aparelho perdido ou roubado**: remover o aparelho no painel do Tailscale (*Machines > ... > Delete*) e trocar a senha da pessoa.
+
+## 6. Se algo der errado
+
+| Sintoma | O que ver |
+| --- | --- |
+| Outro computador não abre a página | O servidor está ligado? O IP mudou (`ipconfig`)? Ambos na mesma rede/roteador? Tente pelo IP, não pelo nome. |
+| A página abre, mas alguém não consegue entrar | 5 senhas erradas seguidas bloqueiam o usuário por 10 minutos (e mais de 15 erradas em 10 minutos vindas do mesmo computador bloqueiam aquele computador). Quem tem o e-mail confirmado usa *Esqueci minha senha* na tela de entrada. Senão, o administrador preenche *Nova senha* no cadastro da pessoa (*Cadastros > Funcionários*; a senha é provisória, a pessoa troca ao entrar). Se não houver nenhum administrador que consiga entrar: `.\.venv\Scripts\python.exe -m flask --app app redefinir-senha maria`. |
+| Uma pessoa nova não consegue confirmar o e-mail e não entra | Confira se o e-mail do cadastro está certo e se o envio funciona (linha abaixo). Em emergência, o administrador libera no servidor: `.\.venv\Scripts\python.exe -m flask --app app confirmar-email maria` (marca o e-mail como confirmado). |
+| O e-mail não chega (código, *Esqueci minha senha*) | O e-mail está configurado (`implantacao\configurar-email.ps1`)? Confira a caixa de spam. `.\.venv\Scripts\python.exe -m flask --app app testar-email alguem@example.org` mostra o erro (senha da caixa, servidor, porta). O sistema nunca escreve o conteúdo dos e-mails nem a senha em `logs\servidor.log`. |
+| A pessoa perdeu o celular do segundo fator | Se ela tem os códigos de recuperação, entra com um deles. Senão, o administrador marca *Desativar o aplicativo autenticador desta pessoa* no cadastro dela, ou, no servidor, `flask --app app desativar-segundo-fator USUARIO`. Ela entra só com a senha e liga o app de novo. |
+| A pessoa é desconectada sozinha | A sessão dura 10 horas desde a entrada, ou **30 dias** se a pessoa deixou marcada a caixa *Manter conectado neste computador* na entrada (usando ou não o sistema: não há tempo de inatividade). Passou disso, é só entrar de novo. Também sai sozinha quem teve a senha trocada, o acesso desativado ou clicou em *Sair*. Se um computador ou celular for perdido, troque a senha da pessoa: isso derruba todas as sessões dela. |
+| O sistema parou | `C:\prontuario\logs\servidor.log` mostra o erro. No Agendador de Tarefas, a tarefa *Prontuario - servidor* mostra o último resultado. |
+| Aviso de backup na página inicial | `C:\prontuario\logs\backup.log`; o HD externo está ligado? |
+| Uma tela deixou de funcionar (botão que não responde, página em branco) logo depois de atualizar | Pode ser a política de conteúdo do navegador (fase 7). Veja `C:\prontuario\logs\servidor.log`: as linhas "CSP: a política barrou..." dizem o quê e em qual página. Para voltar a funcionar enquanto se acha a causa, ligue o modo "só avisar": defina a variável de ambiente `CSP_SOMENTE_RELATORIO=1` para a tarefa do servidor e religue o sistema. Me mande as linhas do registro. |
+| Quer ligar à mão, para ver o erro na tela | `cd C:\prontuario` e `.\.venv\Scripts\python.exe servidor.py` (pare a tarefa antes, para não dividir a porta). |
+
+## 7. Segurança e limites
+
+- **HTTPS** (parte 5): enquanto o sistema é acessado por `http://IP:8000`, a senha trafega sem criptografia dentro da rede do escritório
+  (a página inicial lembra). Com o Tailscale ligado e o http fechado (`configurar-https.ps1 -FecharHttp`), tudo vai criptografado, o cookie do
+  login é só-HTTPS e a auditoria mostra o aparelho de cada acesso. Até lá, mantenha o Wi-Fi com senha forte e deixe visitantes em outra rede.
+- O firewall libera a porta 8000 só para a sub-rede local (e a fecha quando o http é fechado). **Não** redirecione portas no roteador.
+- O Windows 11 Home não tem o BitLocker completo. Em Configurações > Privacidade e segurança, veja se há
+  *Criptografia do dispositivo* e, se houver, ative (guarde a chave de recuperação fora do computador). Use senha no Windows.
+- O arquivo `logs\servidor.log` registra só erros e acessos negados, sem dados dos internos. Quem fez o quê (entradas, quem abriu
+  cada ficha, quem baixou documentos, alterações e mudanças de permissão) fica na **trilha de auditoria**, dentro do sistema:
+  **Cadastros > Auditoria** (só o administrador), com filtros e CSV. A trilha não guarda o conteúdo dos dados, só quais campos mudaram.
+- **Navegador** (fase 7): todo envio leva um código de segurança que só a página do próprio sistema tem (CSRF), e a política de conteúdo só deixa rodar script e estilo do sistema. Um envio vindo de outro lugar recebe "A página venceu".
+- **Contas**: o sistema barra senhas fáceis, exige a troca da senha provisória, encerra a sessão em 10 horas (ou em 30 dias, para quem marca *Manter conectado neste computador*),
+  limita as tentativas por computador, confirma o e-mail de cada pessoa e oferece o segundo fator (aplicativo autenticador). O
+  administrador **não redefine a senha pelo e-mail** sem o segundo fator ligado. Detalhes em `docs\plano-de-seguranca.md`
+  (fase 3).
+- **Rascunhos** (salvamento automático): enquanto alguém preenche um formulário longo, o sistema guarda uma cópia a cada pausa na digitação. Se a energia cair ou a
+  aba fechar, o que foi digitado está em **Rascunhos** (no menu) e a tela de cada registro já abre com ele. O rascunho é só de quem digitou, não aparece em lista nem
+  relatório nenhum, entra no backup e some sozinho depois de 30 dias sem mexer; só o botão *Salvar* grava no prontuário. Detalhes em `docs\plano-de-seguranca.md`.
+- **Documentos escaneados**: na ficha, a aba "Escaneados" de cada passagem (separada da aba "Imprimir") guarda o PDF do documento físico assinado (até 25 MB, vários por registro), vinculado a uma área
+  (Saúde, Financeiro, Serviço Social ou geral): documento de área sigilosa só aparece para quem lê aquela área.
+  Os PDFs ficam em `instance\anexos` (não no banco); o backup do dia os copia para a pasta `anexos` da pasta de backup e **os pen-drives levam cada PDF criptografado** (a primeira vez
+  pode demorar: a tela Cadastros > Backup mostra "Copiando, faltam N de M"). Quem imprime os
+  documentos abre e baixa; anexar e remover é a permissão "Anexar e remover documentos escaneados" (Cadastros > Permissões); apagar de vez, só o administrador. Anexar o escaneamento
+  não substitui o papel assinado. Detalhes em `docs\plano-de-seguranca.md` e `implantacao\RESTAURAR.md`.
+- **Contribuições recebidas** (permissão "Lançar e excluir parcelas e ver o que entrou", a mesma de quem lança as parcelas): o **Início** mostra o card compacto "Contribuições do mês" (quatro números: o que já entrou, o que falta
+  receber no mês, a **inadimplência** e quantos contribuintes já pagaram; e duas listas curtas: quem está em atraso e as últimas entradas) e a página **Relatórios** tem o cartão "Contribuições recebidas em <ano>" com o **relatório total do ano**, em
+  Word e na tela: total, mês a mês, por categoria e por interno (só iniciais, como os outros relatórios; a chave "Anonimizar" mostra o nome). Tudo vem das parcelas lançadas na aba Financeiro da ficha;
+  o valor combinado é tratado como mensal, e parcela sem valor não entra na soma (a tela avisa). **Inadimplência** = parcelas que já venceram e não foram lançadas: a 1ª vence no dia da
+  internação (o valor é pago no ato) e as outras, uma por mês no mesmo dia, até o fim do tratamento (9 meses ou a previsão de término da ficha); pagar atrasado quita as mais antigas (conta a quantidade de parcelas, não o mês). Quem não tem a permissão não vê nem o bloco nem o relatório.
+- **Nomes e endereços** são gravados com a regra de maiúsculas e minúsculas do sistema (FULANO DE TAL -> Fulano de Tal; sem inventar acento). O que foi gravado antes
+  continua como estava, até alguém editar o cadastro. Para arrumar de uma vez, depois de atualizar: `python normalizar_cadastros.py` mostra o que mudaria (não grava nada) e
+  `python normalizar_cadastros.py --aplicar` faz um backup e grava. Não mexe em relatórios e fichas já escritos nem em "alterado em".
+- O aviso por e-mail da troca do pen-drive (e de cópia externa atrasada) sai pela mesma tarefa do backup, uma vez por dia, para
+  o e-mail principal configurado (`avisos_para`).
+- Acesso de fora do escritório só pelo Tailscale (parte 5); nunca por porta aberta no roteador.
+
+## 8. Desinstalar
+
+```powershell
+powershell -ExecutionPolicy Bypass -File implantacao\instalar.ps1 -Remover
+```
+
+Remove as tarefas e a regra do firewall. O banco (`instance`) e os backups **não** são apagados.

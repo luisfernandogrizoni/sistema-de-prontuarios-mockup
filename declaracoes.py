@@ -1,0 +1,70 @@
+"""
+Declarações de internação, uma para cada situação do interno:
+
+  * ativo   -> "Declaração de internação" (encontra-se internado, com o prazo de término);
+  * inativo -> "Declaração de ex-interno" (encontrava-se internado, com o período).
+
+O texto vem dos modelos usados no escritório (Declaração de Internação e Declaração de Internação Ex-Internos),
+com os erros de digitação corrigidos. Triagens (ainda não internadas) não têm declaração.
+"""
+
+import re
+
+from documentos import N, Documento, Paragrafo, Titulo, fecho
+from identidade import atual as identidade
+from prontuario import fmt_data, previsao_termino
+from validacao import fmt_cpf, fmt_rg
+
+# o nome da entidade (em maiúsculas) e a frase que a apresenta (CNPJ, escritório...) vêm da identidade (identidade.py)
+FINALIDADE = "para fins de tratamento da Dependência Química"
+CID = " CID F 14/F10."
+EM_BRANCO = "_" * 14          # dado que falta no cadastro: fica uma linha para escrever à mão
+
+TIPOS = {"ativo": "interno", "inativo": "ex-interno"}
+FONTE, TAMANHO, MARGEM_LATERAL = "Verdana", 10, 1134          # a declaração é em Verdana 10, com as margens de sempre (2 cm), também quando sai no meio de um conjunto (impressos.py)
+
+
+def tipo_da_declaracao(internacao):
+    """'interno' (ativo), 'ex-interno' (inativo) ou None (triagem: não tem declaração)."""
+    return TIPOS.get(internacao.status)
+
+
+def _dado(valor):
+    return N(valor) if valor else N(EM_BRANCO)
+
+
+def _nome_de_arquivo(texto):
+    return re.sub(r'[\\/:*?"<>|]+', " ", texto).strip()
+
+
+def rotulo(internacao):
+    """'Declaração de internação' (ativo) ou 'Declaração de ex-interno' (inativo); o nome do impresso na aba Imprimir."""
+    return "Declaração de internação" if tipo_da_declaracao(internacao) == "interno" else "Declaração de ex-interno"
+
+
+def blocos(internacao, hoje, emissor=None):
+    """Os blocos da declaração (o título, o texto e o fecho com a assinatura de `emissor`; sem ele, o de fábrica). Levanta ValueError para triagem."""
+    tipo = tipo_da_declaracao(internacao)
+    if tipo is None:
+        raise ValueError("só internos ativos ou inativos têm declaração")
+    pessoa = internacao.pessoa
+    identificacao = ["Declaro para devidos fins, e a pedido do interessado ", _dado(pessoa.nome), ", CPF: ",
+                     _dado(fmt_cpf(pessoa.cpf) if pessoa.cpf else ""), ", RG: ", _dado(fmt_rg(pessoa.rg) if pessoa.rg else ""),
+                     ", DN: ", _dado(fmt_data(pessoa.nascimento)), ", "]
+    entidade, apresentacao = identidade().nome_formal.upper(), identidade().declaracao_apresentacao
+    if tipo == "interno":
+        situacao = ["encontra-se internado na ", N(entidade), apresentacao, " desde o dia ", _dado(fmt_data(internacao.inicio)),
+                    f", {FINALIDADE}, com prazo de término no dia ",
+                    _dado(fmt_data(previsao_termino(internacao.inicio, internacao.tratamento_ate))), "." + CID]
+    else:
+        situacao = ["encontrava-se internado na ", N(entidade), apresentacao, " no período de ", _dado(fmt_data(internacao.inicio)),
+                    " a ", _dado(fmt_data(internacao.termino)), f", {FINALIDADE}." + CID]
+    return [Titulo("Declaração", tamanho=14, antes=30, depois=26),
+            Paragrafo(identificacao + situacao, "justificado", primeira_linha=708, entrelinha=1.5),
+            *fecho(hoje, emissor)]
+
+
+def documento(internacao, hoje, emissor=None):
+    """A declaração sozinha, como Documento (Verdana 10): internação ativa ou inativa. Levanta ValueError para triagem. `emissor` assina como responsável pela emissão."""
+    titulo = f"{rotulo(internacao)} - {internacao.pessoa.nome}"
+    return Documento(nome_arquivo=_nome_de_arquivo(titulo), titulo=titulo, blocos=blocos(internacao, hoje, emissor), fonte=FONTE, tamanho=TAMANHO)

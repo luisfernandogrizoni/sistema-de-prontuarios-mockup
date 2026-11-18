@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import linha_voltar with context %}
+{% from "_cartao.html" import legenda %}
+{% from "_rascunho.html" import campo_rascunho, aviso_rascunho with context %}
+{#
+  O acolhimento social, escrito direto no sistema: ficha, relatório, classificação de risco e parecer
+  (servico_social.py descreve as perguntas).
+  Variáveis: i (internação), secoes, v (valores de cada campo), erros, relatorio (o já gravado, ou None),
+  acolhido e responsavel ([(rótulo, valor)] que vêm do cadastro) e anterior (o acolhimento de uma passagem anterior de
+  onde vieram as respostas que não mudam, ou None).
+#}
+
+{% set titulo = 'Acolhimento social' %}
+{% block titulo %}{{ titulo }} · {{ i.pessoa.nome }}{% endblock %}
+
+{% block estilo %}
+  .cabecalho-rel { display: flex; align-items: flex-end; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  .cabecalho-rel h1 { margin: 0 auto 0 0; }
+  .cabecalho-rel .estado { font-size: .85rem; color: var(--suave); }
+  .cadastro-resumo { margin-bottom: 16px; background: linear-gradient(115deg, var(--info-suave), #fff 70%); border: 1px solid var(--info-borda); border-radius: var(--r-lg); padding: 14px 18px; }
+  .cadastro-resumo dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 18px; margin: 0; }
+  .cadastro-resumo dt { font-size: .76rem; color: var(--suave); }
+  .cadastro-resumo dd { margin: 1px 0 0; font-size: .93rem; overflow-wrap: anywhere; }
+  .cadastro-resumo dd:empty::after { content: "—"; color: #bbb; }
+  .cadastro-resumo h3 { margin: 12px 0 8px; font-size: .8rem; color: var(--suave); text-transform: uppercase; letter-spacing: .05em; }
+  .cadastro-resumo h3:first-child { margin-top: 0; }
+  .cadastro-resumo .corrigir { font-size: .85rem; }
+  .rotulo-campo { display: block; font-size: .9rem; margin-bottom: 4px; }
+  textarea { resize: vertical; line-height: 1.4; min-height: 4.4em; }
+  .escolhas { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+  .escolhas label.opcao { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; cursor: pointer; padding: 6px 13px; margin: 0; font-weight: 500;
+                          border: 1px solid var(--borda-forte); border-radius: 999px; font-size: .9rem; background: #fff; user-select: none; }
+  .escolhas label.opcao input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  /* a opção marcada leva a cor da seção (cada seção tem a sua: tom-*) */
+  .escolhas label.opcao:hover { border-color: var(--tom); }
+  .escolhas label.opcao:has(input:checked) { background: var(--tom-suave); border-color: var(--tom); color: var(--tom); font-weight: 700; }
+  .escolhas label.opcao.ok { --tom: var(--sucesso); --tom-suave: var(--sucesso-suave); }
+  .escolhas label.opcao.atencao { --tom: var(--atencao); --tom-suave: var(--atencao-suave); }
+  .escolhas label.opcao.grave { --tom: var(--perigo); --tom-suave: var(--perigo-suave); }
+  .escolhas label.opcao:has(input:focus-visible) { outline: 3px solid rgba(91,141,239,.45); outline-offset: 2px; }
+  .sim-nao { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: center; }
+  .sim-nao .escolhas { flex-wrap: nowrap; }
+  @media (max-width: 640px) { .sim-nao { grid-template-columns: 1fr; } }
+  [data-so-se][hidden] { display: none; }
+{% endblock %}
+
+{# a classificação e o parecer têm cor de semáforo (verde, amarelo, vermelho suave) em vez da cor da seção #}
+{% set gravidade = {'Baixo': 'ok', 'Médio': 'atencao', 'Alto': 'grave', 'Favorável à admissão': 'ok', 'Favorável, com ressalvas': 'atencao', 'Não condizente com o tratamento da casa': 'grave'} %}
+{% macro controle(c) -%}
+  {% set nome = c.chave %}
+  {% if c.tipo == 'longo' %}
+    <label class="{{ c.colunas }}{{ ' com-erro' if erros.get(nome) }}"><span class="rotulo-campo">{{ c.rotulo }}</span>
+      <textarea name="{{ nome }}" rows="{{ c.linhas }}" maxlength="5000" data-cresce>{{ v.get(nome, '') }}</textarea>
+      {% if erros.get(nome) %}<small class="erro">{{ erros[nome] }}</small>{% endif %}</label>
+  {% elif c.tipo == 'escolha' %}
+    <div class="{{ c.colunas }}{{ ' com-erro' if erros.get(nome) }}" role="radiogroup" aria-label="{{ c.rotulo }}"{% if c.so_se %} data-so-se="{{ c.so_se[0] }}" data-valor="{{ c.so_se[1] }}"{{ ' hidden' if v.get(c.so_se[0]) != c.so_se[1] }}{% endif %}><span class="rotulo-campo">{{ c.rotulo }}</span>
+      <div class="escolhas">
+        {% for o in c.opcoes %}<label class="opcao {{ gravidade.get(o, '') }}"><input type="radio" name="{{ nome }}" value="{{ o }}"{{ ' checked' if v.get(nome) == o }} data-desmarca>{{ o }}</label>{% endfor %}
+      </div>
+      {% if erros.get(nome) %}<small class="erro">{{ erros[nome] }}</small>{% endif %}</div>
+  {% elif c.tipo == 'sim_nao' %}
+    <div class="{{ c.colunas }}"><span class="rotulo-campo">{{ c.rotulo }}</span>
+      <div class="sim-nao">
+        <div class="escolhas">
+          <label class="opcao"><input type="radio" name="{{ nome }}" value="sim"{{ ' checked' if v.get(nome) == 'sim' }} data-desmarca>Sim</label>
+          <label class="opcao"><input type="radio" name="{{ nome }}" value="nao"{{ ' checked' if v.get(nome) == 'nao' }} data-desmarca>Não</label>
+        </div>
+        <input type="text" name="{{ nome }}_detalhe" value="{{ v.get(nome ~ '_detalhe', '') }}" maxlength="200" placeholder="Se sim, especifique" aria-label="Se sim, especifique">
+      </div></div>
+  {% else %}
+    <label class="{{ c.colunas }}{{ ' com-erro' if erros.get(nome) }}">{{ c.rotulo }}
+      <input type="{{ 'date' if c.tipo == 'data' else 'text' }}" name="{{ nome }}" value="{{ v.get(nome, '') }}"{{ ' maxlength=200' | safe if c.tipo != 'data' }}{% if c.forma %} data-forma="{{ c.forma }}"{% endif %}>
+      {% if erros.get(nome) %}<small class="erro">{{ erros[nome] }}</small>{% endif %}</label>
+  {% endif %}
+{%- endmacro %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('ficha', id=i.id)) }}
+  {% with msgs = get_flashed_messages() %}
+    {% if msgs %}<ul class="mensagens">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+  {% endwith %}
+
+  <div class="cabecalho-rel">
+    <h1>{{ titulo }}</h1>
+    {% if relatorio and relatorio.finalizado %}
+      <span class="estado">finalizado em {{ relatorio.finalizado_em.strftime('%d/%m/%Y às %H:%M') }}{{ ' por ' ~ relatorio.assinatura.split(' — ')[0] if relatorio.assinatura }}{% if alteracao %} · alterado em {{ alteracao.quando.strftime('%d/%m/%Y às %H:%M') }}{{ ' por ' ~ alteracao.por.split(' — ')[0] if alteracao.por }}{% endif %}</span>
+    {% elif relatorio and relatorio.dados %}
+      <span class="estado">rascunho salvo em {{ relatorio.atualizado_em.strftime('%d/%m/%Y às %H:%M') }}{{ ' por ' ~ relatorio.atualizado_por if relatorio.atualizado_por }}</span>
+    {% else %}
+      <span class="estado">ainda não preenchido</span>
+    {% endif %}
+  </div>
+  <p class="ajuda">{{ i.pessoa.nome }} · {{ i.status_txt }}</p>
+  {{ aviso_rascunho(rascunho) }}
+  {% if anterior %}
+    <div class="aviso">Trouxe do acolhimento anterior, de {{ anterior.finalizado_em.strftime('%d/%m/%Y') if anterior.finalizado_em else anterior.atualizado_em.strftime('%d/%m/%Y') }}, o que não costuma mudar (identificação e histórico familiar, e crenças). Confira e atualize.</div>
+  {% endif %}
+
+  <section class="cadastro-resumo">
+    <h3>Do cadastro do acolhido</h3>
+    <dl>{% for rotulo, valor in acolhido %}<div><dt>{{ rotulo }}</dt><dd>{{ valor }}</dd></div>{% endfor %}</dl>
+    {% if responsavel %}
+    <h3>Responsável</h3>
+    <dl>{% for rotulo, valor in responsavel %}<div><dt>{{ rotulo }}</dt><dd>{{ valor }}</dd></div>{% endfor %}</dl>
+    {% endif %}
+    {% if pode('triagem' if i.e_triagem else 'internacao') %}<p class="corrigir"><a href="{{ url_for('editar_internacao', id=i.id) }}">Corrigir no cadastro</a></p>{% endif %}
+  </section>
+
+  <div class="form-grade">
+  <form method="post" id="form-relatorio" data-indice><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ campo_rascunho(rascunho) }}
+    {% if erros %}<div class="caixa-erros"><strong>{{ erros['_'] if erros.get('_') else 'Confira os campos marcados em vermelho.' }}</strong></div>{% endif %}
+    {% for secao in secoes %}
+    {% set vis = visual.get(secao.titulo, ('documento', 'neutro')) %}
+    <fieldset class="tom-{{ vis[1] }}">
+      {{ legenda(secao.titulo, vis[0]) }}
+      <div class="grade">
+        {% for campo in secao.campos %}{{ controle(campo) }}{% endfor %}
+      </div>
+    </fieldset>
+    {% endfor %}
+
+    <div class="barra-salvar">
+      {% set ja_finalizado = relatorio and relatorio.finalizado %}
+      <button class="botao{{ '' if ja_finalizado else ' secundario' }}" type="submit" name="acao" value="salvar">{{ 'Salvar alterações' if ja_finalizado else 'Salvar rascunho' }}</button>
+      <button class="botao secundario" type="submit" name="acao" value="imprimir"><svg class="icone"><use href="#i-impressora"/></svg>Salvar e imprimir</button>
+      {% if not ja_finalizado %}<button class="botao" type="submit" name="acao" value="finalizar" id="finalizar">Finalizar e assinar</button>{% endif %}
+      <span class="estado-form" hidden>Alterações não salvas</span>
+    </div>
+  </form>
+  </div>
+</main>
+<script src="{{ url_for('static', filename='secoes.js') }}"></script>
+
+<script nonce="{{ csp_nonce() }}">
+  // o campo de texto cresce enquanto se escreve (sem barra de rolagem dentro dele)
+  function crescer(t) { t.style.height = "auto"; t.style.height = Math.max(t.scrollHeight + 2, 0) + "px"; }
+  document.querySelectorAll("textarea[data-cresce]").forEach(function (t) { crescer(t); t.addEventListener("input", function () { crescer(t); }); });
+
+  // clicar de novo numa opção já marcada a desmarca (uma resposta pode ficar em branco). O clique é no rótulo, então
+  // é no grupo que se anota se a opção já estava marcada, antes do navegador marcá-la.
+  document.querySelectorAll(".escolhas").forEach(function (grupo) {
+    grupo.addEventListener("mousedown", function (e) {
+      var rotulo = e.target.closest("label.opcao");
+      if (rotulo) { var r = rotulo.querySelector("input"); r.dataset.estava = r.checked ? "1" : ""; }
+    });
+  });
+  document.querySelectorAll("input[data-desmarca]").forEach(function (r) {
+    r.addEventListener("click", function () {
+      if (r.dataset.estava) { r.checked = false; r.dataset.estava = ""; r.dispatchEvent(new Event("change", { bubbles: true })); }
+    });
+  });
+
+  // o que só vale quando outra resposta é tal (o motivo da rejeição só aparece no parecer "não condizente")
+  document.querySelectorAll("[data-so-se]").forEach(function (alvo) {
+    function conferir() {
+      var marcada = document.querySelector('input[name="' + alvo.dataset.soSe + '"]:checked');
+      var vale = !!marcada && marcada.value === alvo.dataset.valor;
+      alvo.hidden = !vale;
+      if (!vale) alvo.querySelectorAll("input").forEach(function (r) { r.checked = false; });
+    }
+    document.querySelectorAll('input[name="' + alvo.dataset.soSe + '"]').forEach(function (r) { r.addEventListener("change", conferir); });
+  });
+
+  // finalizar pede confirmação
+  var finalizar = document.getElementById("finalizar");
+  if (finalizar) finalizar.addEventListener("click", function (e) {
+    if (!confirm("Finalizar o acolhimento social de " + {{ i.pessoa.nome | tojson }} + "?")) e.preventDefault();
+  });
+</script>
+<script src="{{ url_for('static', filename='rascunho.js') }}"></script>
+{% endblock %}

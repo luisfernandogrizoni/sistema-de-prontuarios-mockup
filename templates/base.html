@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <script src="{{ url_for('static', filename='base.js') }}"></script>
+  <script src="{{ url_for('static', filename='abas-mais.js') }}" defer></script>
+  <title>{% block titulo %}{{ identidade.nome }}{% endblock %}</title>
+  <link rel="icon" href="{{ identidade.url('marca/favicon.ico') }}" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ identidade.url('marca/favicon-32.png') }}">
+  <link rel="apple-touch-icon" href="{{ identidade.url('marca/apple-touch-icon.png') }}">
+  <style nonce="{{ csp_nonce() }}">
+    /* ============================ identidade visual ============================
+       Nada vem de fora (sem fontes nem bibliotecas de terceiros): o sistema guarda dados
+       sensíveis e não faz nenhuma requisição a outros sites para se desenhar. */
+    :root { --vermelho: #b3261e; --vermelho-escuro: #8f1d17; --vermelho-claro: #fdeceb;
+            --fundo: #f5f6f8; --superficie: #fff; --borda: #e4e7ec; --borda-forte: #cfd4dc;
+            --texto: #1d2939; --suave: #667085; --mais-suave: #98a2b3;
+            --verde: #1e6b31; --verde-claro: #eaf6ec; --verde-borda: #a8d5b1;
+            --azul: #1d4f9c; --azul-claro: #e7f0ff;
+            --amarelo: #fff6d6; --ambar: #7a5a00;
+            --raio: 6px; --sombra: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+            --sombra-alta: 0 12px 32px rgba(16,24,40,.16); --altura-topo: 60px;
+
+            /* ---- padrões de interface (docs/padroes-de-interface.md) ----
+               Cores por PAPEL, não por tela: cada papel tem o tom forte (barras, ícones, bordas de destaque), o suave (fundo
+               pastel) e o texto que vai sobre o suave (contraste de pelo menos 4,5:1). Nunca só a cor: sempre texto ou ícone junto. */
+            --primaria: var(--vermelho); --primaria-forte: var(--vermelho-escuro); --primaria-suave: var(--vermelho-claro); --primaria-borda: #f4c7c3;
+            --perigo: #7a1712; --perigo-suave: #fbe9e7; --perigo-borda: #eebdb8;
+            --sucesso: var(--verde); --sucesso-suave: var(--verde-claro); --sucesso-borda: var(--verde-borda);
+            --atencao: var(--ambar); --atencao-suave: var(--amarelo); --atencao-borda: #ecd98a;
+            --info: var(--azul); --info-suave: var(--azul-claro); --info-borda: #bcd2f5;
+            --neutro: #344054; --neutro-suave: #eef1f6; --neutro-borda: #dfe4ec;
+            --foco: #5b8def;                         /* o anel de foco é azul: o vermelho já quer dizer marca, erro e perigo */
+            /* espaços (4, 8, 12, 16, 24, 32), cantos e tamanhos de texto */
+            --e1: 4px; --e2: 8px; --e3: 12px; --e4: 16px; --e5: 24px; --e6: 32px;
+            --r-sm: 4px; --r-md: 6px; --r-lg: 6px; --r-botao: 999px;        /* cantos: caixas e cartões só levemente arredondados; botões em pílula */
+            --largura-max: 1760px; --pad-pagina: clamp(16px, 2vw, 32px);
+            --t-titulo: 1.6rem; --t-secao: 1.05rem; --t-corpo: .95rem; --t-rotulo: .82rem; }
+    * { box-sizing: border-box; }
+    /* o atributo hidden sempre esconde, mesmo em elemento que tem display próprio (flex, grid...): sem isso, um .vazio ou
+       .estado-form "escondido" aparecia assim mesmo */
+    [hidden] { display: none !important; }
+    /* o espaço da barra de rolagem fica sempre reservado: sem isso, trocar para uma aba curta (sem barra) alargava a página em 15 px
+       e o cabeçalho da ficha, que quebra linha conforme a largura, mudava de altura de uma aba para outra */
+    html { scrollbar-gutter: stable; }
+    body { font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
+           font-size: 15px; line-height: 1.45; background: var(--fundo); margin: 0; color: var(--texto);
+           -webkit-font-smoothing: antialiased; }
+    h1 { font-size: 1.55rem; line-height: 1.2; letter-spacing: -.015em; margin: 0 0 4px; }
+    h2 { font-size: 1.05rem; letter-spacing: -.005em; }
+    p.ajuda { margin-top: 0; color: var(--suave); font-size: .9rem; }
+    a { color: var(--vermelho); }
+    /* uma largura só para todas as telas: o conteúdo usa a tela (até --largura-max) e começa na mesma borda do menu; o que é
+       estreito por natureza (formulário curto, senha) fica à esquerda, limitado por .estreito */
+    main { max-width: var(--largura-max); margin: 28px auto; padding: 0 var(--pad-pagina); }
+    .estreito { max-width: 820px; }
+    .estreito.curto { max-width: 520px; }
+    .icone { width: 1.15em; height: 1.15em; flex: none; vertical-align: -.2em; }
+
+    /* ---- barra do topo ---- */
+    .topo { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,.94); backdrop-filter: saturate(1.4) blur(10px);
+            border-bottom: 1px solid var(--borda); }
+    .topo nav { max-width: var(--largura-max); margin: 0 auto; padding: 0 var(--pad-pagina); min-height: var(--altura-topo); display: flex;
+                align-items: center; gap: 4px; flex-wrap: wrap; }
+    .marca { display: flex; align-items: center; gap: 11px; text-decoration: none; color: var(--texto); margin-right: auto; padding: 8px 0; }
+    .marca-logo { width: 40px; height: 40px; flex: none; }
+    .marca strong { display: block; font-size: .98rem; line-height: 1.15; letter-spacing: -.01em; }
+    .marca small { display: block; color: var(--suave); font-size: .72rem; letter-spacing: .03em; }
+    .topo .item { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: var(--r-botao); font-size: .92rem;
+                  font-weight: 600; color: var(--suave); text-decoration: none; transition: background .12s, color .12s; }
+    .topo .item:hover { background: #f2f4f7; color: var(--texto); }
+    .topo .item.atual { background: var(--vermelho-claro); color: var(--vermelho); }
+    .topo .item.novo { color: var(--texto); border: 1px solid var(--borda-forte); background: #fff; padding: 6px 11px; margin-left: 4px; }
+    .topo .item.novo:hover { border-color: var(--vermelho); color: var(--vermelho); }
+    .topo .usuario { display: flex; align-items: center; gap: 10px; margin-left: 12px; padding-left: 14px; border-left: 1px solid var(--borda); }
+    .topo .usuario form { margin: 0; }
+    .topo .usuario .eu { display: flex; align-items: center; gap: 9px; text-decoration: none; color: var(--texto); font-size: .9rem; font-weight: 600; }
+    .topo .usuario .inicial { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: .8rem;
+                              background: #eef1f6; color: #475467; text-transform: uppercase; }
+    .topo .usuario button { font: inherit; font-size: .88rem; font-weight: 600; background: none; border: 0; padding: 6px 12px;
+                            border-radius: var(--r-botao); color: var(--suave); cursor: pointer; }
+    .topo .usuario button:hover { background: #f2f4f7; color: var(--vermelho); }
+    .topo .menu { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    /* peças do menu lateral do celular (ver o bloco "celular" mais abaixo): no computador e no tablet não existem */
+    .topo .menu-botao, .topo .menu-fundo, .topo .menu-cabeca, .topo .menu-rotulo, .topo .menu-rodape, .topo .menu-icone { display: none; }
+    /* até ~1180 px o cabeçalho não cabe numa linha só: marca e usuário em cima, o menu (com os atalhos "+ Triagem" e
+       "+ Prontuário", que só existem aqui) embaixo, com os dois atalhos à direita */
+    @media (max-width: 1180px) {
+      .marca { order: 0; flex: 1 1 auto; }
+      .topo .usuario { order: 1; margin-left: auto; }
+      .topo .menu { order: 2; flex: 1 1 100%; padding-bottom: 8px; }
+      .topo .menu-rotulo + .item.novo { margin-left: auto; }          /* o rótulo "Criar novo" (escondido aqui) marca onde começam os dois atalhos */
+    }
+    @media (max-width: 900px) { .topo .usuario .nome { display: none; } }
+    @media (max-width: 760px) { .marca small { display: none; } }
+    @media (max-width: 400px) { .topo .usuario .inicial { width: 28px; height: 28px; } }       /* a inicial fica: é o caminho para Minha segurança quando a conta ainda não tem o menu (senha provisória) */
+
+    /* ---- botões e etiquetas ---- */
+    /* Hierarquia: UM botão cheio (primário) por tela, para a ação principal; os demais são pastel. O vermelho sólido é da marca
+       e do primário; perigo tem o tom vinho; sólido de perigo só dentro da confirmação (.perigo.solido). */
+    .botao { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: inherit; font-weight: 600; padding: 9px 16px;
+             border: 1px solid var(--primaria); border-radius: var(--r-botao); background: var(--primaria); color: #fff; cursor: pointer;
+             text-decoration: none; font-size: .92rem; width: auto; box-shadow: var(--sombra); transition: background .12s, border-color .12s, box-shadow .12s, color .12s; }
+    .botao:hover { background: var(--primaria-forte); border-color: var(--primaria-forte); }
+    .botao:focus-visible, .topo .item:focus-visible { outline: 3px solid rgba(91,141,239,.45); outline-offset: 2px; }
+    .botao.secundario { background: var(--neutro-suave); color: var(--texto); border-color: var(--neutro-borda); box-shadow: none; }       /* pastel neutro: o padrão dos demais botões */
+    .botao.secundario:hover { background: #e3e8f0; border-color: #cfd6e2; }
+    .botao.suave { background: var(--primaria-suave); color: var(--primaria); border-color: var(--primaria-borda); box-shadow: none; }        /* pastel da cor primária: o "principal" de um grupo repetido (documentos) */
+    .botao.suave:hover { background: #fadbd8; border-color: #eab0ab; }
+    .botao.fantasma { background: transparent; color: var(--suave); border-color: transparent; box-shadow: none; }
+    .botao.fantasma:hover { background: var(--neutro-suave); color: var(--texto); }
+    .botao.perigo { background: var(--perigo-suave); color: var(--perigo); border-color: var(--perigo-borda); box-shadow: none; }               /* excluir: vinho suave */
+    .botao.perigo:hover { background: #f6d6d2; border-color: #e3a49d; }
+    .botao.perigo.solido { background: var(--perigo); border-color: var(--perigo); color: #fff; box-shadow: var(--sombra); }                     /* só na confirmação */
+    .botao.perigo.solido:hover { background: #5c100d; border-color: #5c100d; }
+    .botao.secundario.perigo { background: var(--perigo-suave); color: var(--perigo); border-color: var(--perigo-borda); }
+    .botao.pequeno { padding: 5px 12px; font-size: .82rem; gap: 6px; }
+    .botao[disabled] { opacity: .6; cursor: default; }
+    /* avisos de confirmação: cartão discreto no canto, que some sozinho (base.html, no fim) */
+    .mensagens { list-style: none; padding: 0; margin: 0; position: fixed; bottom: 20px; right: 20px; z-index: 60;
+                 display: grid; gap: 8px; width: min(380px, calc(100vw - 28px)); pointer-events: none; }
+    .mensagens li { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; background: #fff; border: 1px solid var(--sucesso-borda);
+                    border-left: 4px solid var(--sucesso); border-radius: var(--r-md); padding: 11px 12px 11px 14px; color: var(--texto); font-size: .9rem;
+                    box-shadow: var(--sombra-alta); animation: aviso-entra .22s ease-out; transition: opacity .3s, transform .3s; }
+    .mensagens li.saindo { opacity: 0; transform: translateY(8px); }
+    .mensagens li .fechar-aviso { margin-left: auto; flex: none; border: 0; background: none; color: var(--suave); cursor: pointer; padding: 0 2px; font-size: 1.1rem; line-height: 1; }
+    .mensagens li .fechar-aviso:hover { color: var(--texto); }
+    @keyframes aviso-entra { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .mensagens li { animation: none; } }
+    .selo { display: inline-flex; align-items: center; gap: 6px; font-size: .76rem; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+            background: #f2f4f7; color: #475467; white-space: nowrap; }
+    .selo::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    /* chave liga/desliga (link ou botão): <a class="interruptor ligado" role="switch" aria-checked="true"><i class="trilho"></i><span>Texto</span></a> */
+    .interruptor { display: inline-flex; align-items: center; gap: 10px; padding: 5px 14px 5px 7px; border-radius: 999px; border: 1px solid var(--borda-forte); background: #fff; color: var(--texto);
+                   font: inherit; font-size: .88rem; font-weight: 600; text-decoration: none; cursor: pointer; white-space: nowrap; }
+    .interruptor:hover { border-color: var(--vermelho); }
+    .interruptor:focus-visible { outline: 2px solid var(--vermelho); outline-offset: 2px; }
+    .interruptor .trilho { position: relative; flex: none; width: 38px; height: 22px; border-radius: 999px; background: #c4ccd8; transition: background .15s; }
+    .interruptor .trilho::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.35); transition: transform .15s; }
+    .interruptor.ligado .trilho { background: var(--verde); }
+    .interruptor.ligado .trilho::after { transform: translateX(16px); }
+    .selo.ativo { background: var(--verde-claro); color: var(--verde); }
+    .selo.inativo { background: #f2f4f7; color: #667085; }
+    .selo.em_admissao { background: var(--azul-claro); color: var(--azul); }
+    .selo.lista_espera { background: var(--amarelo); color: var(--ambar); }
+    .selo.desistiu { background: var(--vermelho-claro); color: var(--vermelho); }
+    .selo.rejeitado { background: #e4e7ec; color: #344054; }
+
+    /* ---- formulários (triagem e prontuário) ---- */
+    /* cada seção é um cartão: o título (legend) vira o cabeçalho do cartão, não o título riscando a borda */
+    fieldset { --tom: var(--neutro); --tom-suave: var(--neutro-suave); --tom-borda: var(--neutro-borda);
+               background: #fff; border: 1px solid var(--borda); border-radius: var(--r-lg); margin: 0 0 var(--e4); padding: 0 0 var(--e5); box-shadow: var(--sombra); min-width: 0; }
+    legend { float: left; width: 100%; display: flex; align-items: center; gap: 10px; padding: 12px 20px; margin: 0 0 var(--e4); font-weight: 700; font-size: var(--t-secao); letter-spacing: -.005em;
+             background: #fbfcfd; border-bottom: 1px solid #f0f2f5; border-radius: var(--r-lg) var(--r-lg) 0 0; }
+    legend + * { clear: both; }
+    fieldset > :not(legend) { margin-left: 20px; margin-right: 20px; max-width: calc(100% - 40px); }
+    .grade { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px 14px; }
+    .c1 { grid-column: span 1; } .c2 { grid-column: span 2; } .c3 { grid-column: span 3; }
+    .c4 { grid-column: span 4; } .c5 { grid-column: span 5; } .c6 { grid-column: span 6; }
+    label { display: flex; flex-direction: column; font-size: var(--t-rotulo); font-weight: 600; color: #344054; gap: 6px; }
+    input, select, textarea { font: inherit; font-weight: 400; font-size: var(--t-corpo); padding: 9px 12px; border: 1px solid #d5dae3; border-radius: 10px; width: 100%;
+                              background: #fff; color: var(--texto); transition: border-color .12s, box-shadow .12s; }
+    input:hover, select:hover, textarea:hover { border-color: #b9c1ce; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--foco); box-shadow: 0 0 0 3px rgba(91,141,239,.22); }
+    input[readonly] { background: #f3f4f6; }
+    small { color: #777; }
+    small.erro, .erro { color: var(--primaria); font-weight: 500; }
+    label.com-erro input, label.com-erro select, label.com-erro textarea { border-color: var(--primaria); background: #fff8f7; }
+    label.com-erro input:focus, label.com-erro select:focus, label.com-erro textarea:focus { box-shadow: 0 0 0 3px rgba(179,38,30,.16); }
+    .caixa-erros { background: var(--perigo-suave); border: 1px solid var(--perigo-borda); border-radius: var(--r-md); padding: 10px 14px; margin-bottom: 14px; color: var(--perigo); }
+    .caixa-info { background: var(--info-suave); border: 1px solid var(--info-borda); border-radius: var(--r-md); padding: 10px 14px; margin-bottom: 14px; color: var(--info); }
+    @media (max-width: 640px) { .grade > * { grid-column: span 6; } }
+    .paciente-escolhido { background: var(--verde-claro); border: 1px solid var(--verde-borda); border-radius: var(--r-md); padding: 10px 14px; margin-bottom: 16px; font-size: .92rem; }
+    .resultado-pessoas { list-style: none; margin: 6px 0 0; padding: 0; border: 1px solid var(--borda); border-radius: var(--r-md); max-height: 260px; overflow: auto; background: #fff; }
+    .resultado-pessoas li { padding: 8px 10px; border-bottom: 1px solid #eee; cursor: pointer; font-size: .9rem; }
+    .resultado-pessoas li:hover, .resultado-pessoas li:focus { background: var(--amarelo); outline: none; }
+    .resultado-pessoas li small { display: block; }
+
+
+    /* ---- cores das categorias (a mesma em todas as telas) ----
+       Social: azul acinzentado que CLAREIA conforme a contribuição aumenta (Social < Social I < Social II);
+       Particular: azul bebê; Caps AD: vermelho; a prefeitura (convênio municipal): laranja. */
+    .chip { display: inline-block; padding: 2px 10px; border-radius: 8px; font-size: .78rem; font-weight: 600; white-space: nowrap; }
+    .chip.caps, .tipo-caps { background: #fbdcd9; color: #a8211a; --cor: #d93a30; }
+    .chip.laranja, .tipo-laranja { background: #ffe5cc; color: #983f00; --cor: #f08a24; }
+    .chip.social, .tipo-social { background: #5f7389; color: #fff; --cor: #5f7389; }
+    .chip.social-1, .tipo-social-1 { background: #a9b9cc; color: #1f2d3d; --cor: #a9b9cc; }
+    .chip.social-2, .tipo-social-2 { background: #d3dce7; color: #2b3a4b; --cor: #d3dce7; }
+    .chip.particular, .tipo-particular { background: #cfe8fb; color: #14659f; --cor: #7cc0ef; }
+    .chip.outro, .tipo-outro { background: #f2f4f7; color: #475467; --cor: #cfd4dc; }
+    /* cores extras para os convênios cadastrados (catalogo.CORES); texto com contraste de pelo menos 6:1 */
+    .chip.verde, .tipo-verde { background: #d4efdc; color: #17592c; --cor: #4caf6a; }
+    .chip.roxo, .tipo-roxo { background: #e6defa; color: #4a2a96; --cor: #8a63e0; }
+    .chip.rosa, .tipo-rosa { background: #fbdcea; color: #9a1457; --cor: #e45a9a; }
+    .chip.turquesa, .tipo-turquesa { background: #cdeff2; color: #0a5a66; --cor: #2aa6b8; }
+    .chip.amarelo, .tipo-amarelo { background: #fdf0bd; color: #6b5000; --cor: #e0b000; }
+    .chip.marrom, .tipo-marrom { background: #ecdccf; color: #693b1c; --cor: #a8714a; }
+
+    /* ---- listas (internos e triagens) ---- */
+    /* ---- cabeçalho e ferramentas das listas (internos, triagens) ---- */
+    .pagina-topo { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+    .pagina-topo .titulo { margin-right: auto; }
+    .pagina-topo p { margin: 0; }
+    .ferramentas { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+    .segmentado { display: inline-flex; gap: 2px; padding: 4px; background: #eceff3; border-radius: var(--r-botao); }
+    .segmentado button, .segmentado a { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: .88rem; font-weight: 600; padding: 7px 14px;
+                         border: 0; border-radius: var(--r-botao); background: transparent; color: var(--suave); cursor: pointer; transition: background .12s, color .12s; }
+    .segmentado button:hover, .segmentado a:hover { color: var(--texto); }
+    .segmentado button.ativo, .segmentado a.ativo { background: #fff; color: var(--texto); box-shadow: 0 1px 3px rgba(16,24,40,.14); }
+    .segmentado a { text-decoration: none; }
+    /* caixa de marcar (ativo, assina por padrão...) */
+    label.caixa { flex-direction: row; align-items: center; gap: 9px; font-size: .92rem; cursor: pointer; }
+    label.caixa input { width: auto; margin: 0; accent-color: var(--vermelho); }
+    /* escolher arquivo (data-escolher-arquivo, static/base.js): no lugar do campo cru do navegador, uma área com ícone, texto e botão. O <input type="file"> fica
+       transparente POR CIMA dela: clicar e soltar um arquivo ali são do próprio navegador, e o foco do teclado continua nele. */
+    .escolher-arquivo { position: relative; display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 12px 14px; background: #fafbfc;
+                        border: 1.5px dashed var(--borda-forte); border-radius: var(--r-md); font-size: var(--t-corpo); font-weight: 400; color: var(--texto); cursor: pointer;
+                        transition: background .12s, border-color .12s, box-shadow .12s; }
+    .escolher-arquivo:hover { background: var(--neutro-suave); border-color: #b9c1ce; }
+    .escolher-arquivo:focus-within { border-color: var(--foco); box-shadow: 0 0 0 3px rgba(91,141,239,.22); }
+    .escolher-arquivo input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; opacity: 0; cursor: pointer; }
+    .escolher-icone { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: var(--r-md); background: var(--neutro-suave); color: var(--suave);
+                      transition: background .12s, color .12s; }
+    .escolher-arquivo:hover .escolher-icone { background: #fff; }
+    .escolher-icone .icone { width: 20px; height: 20px; }
+    .escolher-icone .pdf { display: none; font-size: .72rem; font-weight: 800; letter-spacing: .03em; }
+    .escolher-texto { flex: 1; min-width: 0; display: grid; gap: 2px; }
+    .escolher-texto strong { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }   /* nome comprido: 2 linhas (o inteiro está no title do campo) */
+    .escolher-texto small { color: var(--suave); }
+    .escolher-botao { flex: none; }                                                                    /* a aparência é de .botao.secundario.pequeno */
+    .escolher-arquivo:hover .escolher-botao { background: #e3e8f0; border-color: #cfd6e2; }
+    .escolher-arquivo .sem-mouse { display: none; }
+    @media (hover: none) and (pointer: coarse) { .escolher-arquivo .com-mouse { display: none; } .escolher-arquivo .sem-mouse { display: inline; } }
+    .escolher-arquivo.arrastando { background: var(--info-suave); border-color: var(--foco); border-style: solid; }
+    .escolher-arquivo.arrastando .escolher-icone { background: #fff; color: var(--info); }
+    .escolher-arquivo.com-arquivo { background: #fff; border-style: solid; border-color: var(--borda); }  /* igual a um item da lista: é o que vai ser anexado */
+    .escolher-arquivo.com-arquivo .escolher-icone { background: var(--vermelho-claro); color: var(--vermelho); }
+    .escolher-arquivo.com-arquivo .escolher-icone .icone { display: none; }
+    .escolher-arquivo.com-arquivo .escolher-icone .pdf { display: block; }
+    .escolher-arquivo.invalido { background: var(--perigo-suave); border-style: solid; border-color: var(--perigo-borda); }
+    .escolher-arquivo.invalido .escolher-icone { background: #fff; color: var(--perigo); }
+    .escolher-arquivo.invalido .escolher-texto small { color: var(--perigo); font-weight: 500; }
+    .campo-arquivo { container-type: inline-size; }                                                    /* quem decide é a largura do campo (a ficha o põe numa coluna estreita), não a da tela */
+    .escolher-arquivo { flex-wrap: wrap; }
+    @container (max-width: 400px) { .escolher-botao { flex: 1 1 100%; } }
+    .segmentado .n { font-size: .74rem; padding: 1px 8px; border-radius: 999px; background: rgba(16,24,40,.08); font-variant-numeric: tabular-nums; }
+    .segmentado button.ativo .n, .segmentado a.ativo .n { background: var(--vermelho-claro); color: var(--vermelho); }
+    .busca { position: relative; flex: 1 1 300px; max-width: 440px; }
+    .busca .icone { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--mais-suave); pointer-events: none; }
+    .busca #busca { width: 100%; padding: 10px 14px 10px 40px; border-radius: 11px; background: #fff; box-shadow: var(--sombra); }
+    /* filtros da lista de internos (categoria, ano), tamanho da página e paginador (static/tabela.js, TabelaPaginada) */
+    .filtro-lista { width: auto; min-width: 11rem; padding: 10px 14px; border-radius: 11px; background: #fff; box-shadow: var(--sombra); }
+    .moldura[aria-busy="true"] { opacity: .55; transition: opacity .15s; }
+    .rodape-lista { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; }
+    .rodape-lista .rodape { margin: 0; }
+    .por-pagina { flex-direction: row; align-items: center; gap: 8px; font-size: .8rem; font-weight: 400; color: var(--suave); }
+    .por-pagina select { width: auto; padding: 5px 10px; font-size: .85rem; }
+    .paginador { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 0 auto; }
+    .paginador[hidden] { display: none; }
+    .paginador button { min-width: 36px; padding: 6px 11px; font: inherit; font-size: .85rem; font-weight: 600; color: var(--texto); background: #fff;
+                        border: 1px solid var(--borda); border-radius: var(--r-botao); cursor: pointer; }
+    .paginador button:hover:not(:disabled):not([aria-current]) { border-color: var(--borda-forte); background: #fafbfc; }
+    .paginador button[aria-current="page"] { background: var(--vermelho-claro); color: var(--vermelho); border-color: var(--vermelho); cursor: default; }
+    .paginador button:disabled { opacity: .45; cursor: default; }
+    .paginador button:focus-visible { outline: 3px solid rgba(179,38,30,.3); outline-offset: 2px; }
+    .paginador .reticencias { padding: 0 4px; color: var(--suave); }
+
+    /* ---- tabela ---- */
+    .lista td { padding: 12px 12px; }
+    .lista td.livre { white-space: normal; min-width: 150px; }
+    .pessoa { display: flex; align-items: center; gap: 12px; min-width: 215px; }
+    .pessoa a { display: block; color: var(--texto); line-height: 1.25; }
+    .pessoa a:hover { color: var(--vermelho); }
+    .pessoa small, .sub { display: block; color: var(--suave); font-size: .76rem; font-weight: 400; margin-top: 1px; white-space: nowrap; }
+    .avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: .78rem; font-weight: 700; letter-spacing: .02em; }
+    .av0 { background: #e7f0ff; color: #1d4f9c; } .av1 { background: #fde8f1; color: #a3185f; }
+    .av2 { background: #eaf6ec; color: #1e6b31; } .av3 { background: #fff1de; color: #9a4d00; }
+    .av4 { background: #efe9fd; color: #5b30b8; } .av5 { background: #e0f5f7; color: #0b6471; }
+    .av6 { background: #fdeceb; color: #b3261e; } .av7 { background: #eef0f3; color: #475467; }
+    .mudo { color: var(--suave); font-style: italic; }
+    .lista td.acao { text-align: right; }
+    .lista td.num .sub { text-align: right; }
+    .rodape .ponto { margin: 0 6px; }
+    .aviso { background: var(--verde-claro); border: 1px solid var(--verde-borda); border-radius: var(--r-md); padding: 11px 15px; margin-bottom: 14px; font-size: .92rem; color: #17501f; }
+    .aviso.erro { background: #fff5f5; border-color: #f0b4b0; color: var(--texto); }
+    .moldura { background: #fff; border: 1px solid var(--borda); border-radius: var(--raio); box-shadow: var(--sombra); overflow-x: auto; }
+    table.lista { border-collapse: separate; border-spacing: 0; width: 100%; font-size: .88rem; }
+    .lista th, .lista td { padding: 11px 12px; text-align: left; border-bottom: 1px solid #f0f2f5; vertical-align: middle; }
+    .lista th, .lista td.fixo, .lista td.num { white-space: nowrap; }
+    .lista th { background: #f9fafb; color: var(--suave); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+                cursor: pointer; user-select: none; border-bottom: 1px solid var(--borda); }
+    .lista th:hover { color: var(--vermelho); }
+    .lista th.sem-ordem { cursor: default; } .lista th.sem-ordem:hover { color: var(--suave); }
+    .lista th[aria-sort="ascending"], .lista th[aria-sort="descending"] { color: var(--vermelho); }
+    .lista th[aria-sort="ascending"]::after { content: " ▲"; font-size: .8em; }
+    .lista th[aria-sort="descending"]::after { content: " ▼"; font-size: .8em; }
+    .lista td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .lista tbody tr:last-child td { border-bottom: 0; }
+    .lista tbody tr:hover { background: #fafbfc; }
+    .lista tr.novo td { animation: destaque 4s ease-out 1; }
+    @keyframes destaque { from { background: var(--amarelo); } to { background: transparent; } }
+    .lista td a { font-weight: 600; text-decoration: none; }
+    .lista td select { width: auto; padding: 4px 8px; font-size: .85rem; }
+    .seletor { appearance: none; -webkit-appearance: none; width: auto; min-width: 12rem; font: inherit; font-size: .8rem; font-weight: 600; padding: 5px 34px 5px 12px;
+               border: 0; border-radius: 999px; cursor: pointer; background: #f2f4f7 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23667085' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center; color: #475467; }
+    .seletor.em_admissao { background-color: var(--azul-claro); color: var(--azul); }
+    .seletor.lista_espera { background-color: var(--amarelo); color: var(--ambar); }
+    .seletor.desistiu { background-color: var(--vermelho-claro); color: var(--vermelho); }
+    .seletor.rejeitado { background-color: #e4e7ec; color: #344054; }
+    .vazio { padding: 40px 20px; text-align: center; color: var(--suave); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .icone-vazio { width: 52px; height: 52px; display: grid; place-items: center; border-radius: var(--r-md); background: var(--neutro-suave); color: var(--mais-suave); }
+    .icone-vazio .icone { width: 24px; height: 24px; }
+    .rodape { color: var(--suave); font-size: .8rem; margin-top: 10px; }
+
+    /* ---- janelas de confirmação das listas (admitir, dar baixa) ---- */
+    dialog { border: 0; border-radius: var(--r-lg); padding: 22px 24px; width: min(480px, 92vw); box-shadow: var(--sombra-alta); color: var(--texto); }
+    dialog::backdrop { background: rgba(16,24,40,.45); backdrop-filter: blur(2px); }
+    dialog h2 { margin-top: 0; }
+    dialog .grade { margin-bottom: 14px; }
+    dialog .botoes { display: flex; gap: 8px; justify-content: flex-end; }
+    .botoes-form { display: flex; gap: 10px; flex-wrap: wrap; }
+    .segmentado { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+    .segmentado::-webkit-scrollbar { display: none; }
+    .segmentado button, .segmentado a { white-space: nowrap; flex: none; }
+    /* barra de abas que não cabe na tela: o botão ⌄ na ponta direita abre a lista de todas as abas (static/abas-mais.js; marque a barra com data-mais-abas) */
+    .rolavel-mais { position: relative; min-width: 0; max-width: 100%; display: flex; }
+    .rolavel-mais > .rolavel { flex: 0 1 auto; min-width: 0; }
+    .rolavel-mais.transborda > .rolavel::after { content: ""; flex: 0 0 46px; }                      /* a última aba não fica por baixo do botão */
+    .mais-abas { position: absolute; top: 0; right: 0; bottom: 0; width: 52px; display: flex; align-items: center; justify-content: flex-end; padding: 0 6px 0 0; border: 0; cursor: pointer;
+                 background: linear-gradient(to right, transparent, var(--fundo-barra, #fff) 46%); color: var(--texto); border-radius: 0 var(--r-botao) var(--r-botao) 0; }
+    .mais-abas[hidden] { display: none; }
+    .mais-abas .icone { width: 30px; height: 30px; padding: 6px; border-radius: 50%; background: #fff; border: 1px solid var(--borda-forte); box-shadow: var(--sombra); }
+    .mais-abas:hover .icone, .mais-abas[aria-expanded="true"] .icone { background: var(--neutro-suave); }
+    .mais-abas:focus-visible .icone { outline: 3px solid rgba(179,38,30,.3); outline-offset: 1px; }
+    .segmentado ~ .mais-abas { --fundo-barra: #eceff3; }
+    .mais-abas-lista { position: fixed; z-index: 70; min-width: 210px; max-width: calc(100vw - 16px); max-height: min(70vh, 480px); overflow-y: auto; padding: 6px; display: grid; gap: 2px;
+                       background: #fff; border: 1px solid var(--borda); border-radius: var(--r-md); box-shadow: var(--sombra-alta); }
+    .mais-abas-lista .item-aba { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: .95rem;
+                                 font-weight: 600; color: var(--texto); text-align: left; cursor: pointer; }
+    .mais-abas-lista .item-aba:hover, .mais-abas-lista .item-aba:focus-visible { background: var(--neutro-suave); outline: 0; }
+    .mais-abas-lista .item-aba[aria-current="true"] { color: #1d4f9c; background: #eef4ff; }
+    .mais-abas-lista .icone { width: 18px; height: 18px; flex: none; }
+    .mais-abas-lista .marca { margin: 0 0 0 auto; }
+    .mais-abas-lista .n, .mais-abas-lista .contagem { min-width: 20px; padding: 0 7px; border-radius: 999px; background: rgba(16,24,40,.08); color: var(--suave); font-size: .75rem; line-height: 20px; text-align: center; }
+    .cabecalho-impressao { display: none; }
+    .voltar { display: inline-flex; align-items: center; gap: 6px; color: var(--suave); font-weight: 600; font-size: .9rem; text-decoration: none;
+              padding: 4px 8px 4px 0; border-radius: 8px; }
+    .voltar:hover { color: var(--vermelho); }
+    .voltar:focus-visible { outline: 3px solid rgba(179,38,30,.3); outline-offset: 2px; }
+    .voltar .icone { transform: rotate(180deg); }
+    .voltar-linha { margin: 0 0 10px; }
+
+    /* ---- componentes de leitura (ficha e telas parecidas; veja docs/padroes-de-interface.md) ---- */
+    /* tons de destaque: um par (forte, suave) por papel, escolhido no cartão com a classe tom-* */
+    .tom-azul { --tom: var(--info); --tom-suave: var(--info-suave); --tom-borda: var(--info-borda); }
+    .tom-verde { --tom: var(--sucesso); --tom-suave: var(--sucesso-suave); --tom-borda: var(--sucesso-borda); }
+    .tom-amarelo { --tom: var(--atencao); --tom-suave: var(--atencao-suave); --tom-borda: var(--atencao-borda); }
+    .tom-rosa { --tom: var(--primaria); --tom-suave: var(--primaria-suave); --tom-borda: var(--primaria-borda); }
+    .tom-roxo { --tom: #5b30b8; --tom-suave: #efe9fd; --tom-borda: #d6c8f6; }
+    .tom-turquesa { --tom: #0b6471; --tom-suave: #e0f5f7; --tom-borda: #b4e2e8; }
+    .tom-neutro { --tom: var(--neutro); --tom-suave: var(--neutro-suave); --tom-borda: var(--neutro-borda); }
+    /* cartão de seção: cabeçalho com ícone pastel + corpo */
+    .cartao-secao { --tom: var(--neutro); --tom-suave: var(--neutro-suave); --tom-borda: var(--neutro-borda);
+                    background: #fff; border: 1px solid var(--borda); border-radius: var(--r-lg); box-shadow: var(--sombra); margin: 0 0 var(--e4); }
+    .cartao-secao > header { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-bottom: 1px solid #f0f2f5; }
+    .cartao-secao > header h2 { margin: 0; font-size: var(--t-secao); letter-spacing: -.005em; }
+    .cartao-secao > .corpo { padding: 16px 18px 18px; }
+    .icone-secao { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: var(--r-md); background: var(--tom-suave); color: var(--tom); }
+    /* dados: rótulo pequeno e valor; o que está vazio não ocupa lugar, vai numa linha só */
+    .dados { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; margin: 0; }
+    .dados dt { font-size: var(--t-rotulo); color: var(--suave); }
+    .dados dd { margin: 2px 0 0; font-size: var(--t-corpo); overflow-wrap: anywhere; }
+    .dados .largo { grid-column: 1 / -1; }
+    .nao-informado { margin: 14px 0 0; padding-top: 12px; border-top: 1px dashed var(--borda); color: var(--suave); font-size: var(--t-rotulo); }
+    .dados + .nao-informado:first-child, .corpo > .nao-informado:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+    /* menu "Mais": ações raras fora da vista */
+    details.mais { position: relative; }
+    details.mais > summary { list-style: none; cursor: pointer; user-select: none; }
+    details.mais > summary::-webkit-details-marker { display: none; }
+    details.mais[open] > summary { background: #e3e8f0; }
+    .menu-mais { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; min-width: 250px; padding: 6px; display: grid; gap: 2px;
+                 background: #fff; border: 1px solid var(--borda); border-radius: var(--r-md); box-shadow: var(--sombra-alta); }
+    .menu-mais a, .menu-mais button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: 0; border-radius: var(--r-sm); background: none;
+                                      font: inherit; font-size: .92rem; color: var(--texto); text-align: left; text-decoration: none; cursor: pointer; }
+    .menu-mais a:hover, .menu-mais button:hover { background: var(--neutro-suave); }
+    .menu-mais .item-perigo { color: var(--perigo); }
+    .menu-mais .item-perigo:hover { background: var(--perigo-suave); }
+    .menu-mais hr { border: 0; border-top: 1px solid #f0f2f5; margin: 4px 2px; }
+    .avatar.grande { width: 64px; height: 64px; font-size: 1.3rem; }
+
+    /* ---- formulários longos: índice das seções ao lado e barra de salvar sempre à vista (static/secoes.js monta o índice) ---- */
+    .form-grade { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 0 var(--e5); align-items: start; margin-top: var(--e4); }
+    .form-grade > form, .form-grade > .corpo-form { grid-column: 2; }
+    .indice { grid-column: 1; grid-row: 1 / span 20; position: sticky; top: calc(var(--topo-h, 60px) + 12px); display: grid; gap: 2px; padding: 8px;
+              background: #fff; border: 1px solid var(--borda); border-radius: var(--r-lg); box-shadow: var(--sombra); max-height: calc(100dvh - var(--topo-h, 60px) - 28px); overflow: auto; }
+    .indice a { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-md); color: var(--neutro); font-size: .9rem; font-weight: 600;
+                text-decoration: none; transition: background .12s, color .12s; }
+    .indice a:hover { background: var(--neutro-suave); }
+    .indice a .icone-secao { width: 26px; height: 26px; border-radius: var(--r-md); }
+    .indice a .icone-secao .icone { width: 1em; height: 1em; }
+    .indice a.ativo { background: var(--tom-suave); color: var(--texto); }
+    .indice a.com-erro { color: var(--primaria); }
+    .indice a.com-erro::after { content: ""; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: var(--primaria); flex: none; }
+    fieldset[id^="secao-"] { scroll-margin-top: calc(var(--topo-h, 60px) + 16px); }
+    .legenda-icone, legend .icone-secao { --tom: var(--neutro); }
+    legend .icone-secao { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: var(--r-md); background: var(--tom-suave); color: var(--tom); }
+    /* barra de salvar: fica colada no fim da tela enquanto o formulário rola */
+    .barra-salvar { position: sticky; bottom: 0; z-index: 15; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; margin: 4px 0 0;
+                    background: rgba(255,255,255,.94); backdrop-filter: blur(8px); border: 1px solid var(--borda); border-radius: var(--r-lg) var(--r-lg) 0 0;
+                    box-shadow: 0 -6px 20px rgba(16,24,40,.06); }
+    .barra-salvar .estado-form { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; font-size: .84rem; color: var(--atencao); font-weight: 600; }
+    .barra-salvar .estado-form::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--atencao); }
+    .barra-salvar .estado-form[hidden] { display: none; }
+    /* salvamento automático (static/rascunho.js): o texto diz se o rascunho já está guardado ou se deu problema */
+    .barra-salvar .estado-form[data-estado="salvo"] { color: var(--info); }
+    .barra-salvar .estado-form[data-estado="salvo"]::before { background: var(--info); }
+    .barra-salvar .estado-form[data-estado="erro"] { color: var(--perigo); }
+    .barra-salvar .estado-form[data-estado="erro"]::before { background: var(--perigo); }
+    .aviso-rascunho { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; background: var(--info-suave); border: 1px solid var(--info-borda);
+                      border-radius: var(--r-md); padding: 10px 14px; margin-bottom: var(--e4); font-size: .92rem; color: var(--texto); }
+    .aviso-rascunho .texto { flex: 1 1 320px; }
+    .aviso-rascunho .atencao { display: block; margin-top: 4px; color: var(--atencao); font-weight: 600; }
+    .aviso-rascunho form { margin: 0; }
+    .topo .usuario .sino { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: var(--suave); text-decoration: none; }
+    .topo .usuario .sino:hover { background: #f2f4f7; color: var(--vermelho); }
+    .topo .usuario .sino .icone { width: 19px; height: 19px; }
+    .topo .usuario .sino .contagem { position: absolute; top: -3px; right: -5px; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--perigo-suave); color: var(--perigo);
+                                     border: 1px solid var(--perigo-borda); font-size: .68rem; font-weight: 700; line-height: 16px; text-align: center; }
+    .topo .item .contagem { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--info-suave); color: var(--info); border: 1px solid var(--info-borda);
+                            font-size: .74rem; line-height: 18px; text-align: center; }
+    body:has(.barra-salvar) .mensagens { bottom: 84px; }
+    /* seção opcional recolhida */
+    details.opcional { margin: 0 0 var(--e4); }
+    details.opcional > summary { cursor: pointer; padding: 12px 16px; background: #fff; border: 1px dashed var(--borda-forte); border-radius: var(--r-md); color: var(--suave); font-weight: 600; list-style: none; }
+    details.opcional > summary::-webkit-details-marker { display: none; }
+    details.opcional > summary::before { content: "+"; display: inline-block; width: 1.3em; font-weight: 700; }
+    details.opcional[open] > summary { margin-bottom: var(--e4); color: var(--texto); }
+    details.opcional[open] > summary::before { content: "−"; }
+    @media (max-width: 1000px) {
+      .form-grade { grid-template-columns: minmax(0, 1fr); }
+      .form-grade > form, .form-grade > .corpo-form { grid-column: 1; }
+      /* o índice vira uma barra de seções que desliza de lado, presa no topo */
+      .indice { grid-column: 1; grid-row: auto; position: sticky; top: var(--topo-h, 0px); z-index: 14; display: flex; overflow-x: auto; max-height: none; margin: 0 calc(var(--pad-pagina) * -1) 14px; padding: 8px var(--pad-pagina);
+                border-radius: 0; border-width: 0 0 1px; scrollbar-width: none; }
+      .indice::-webkit-scrollbar { display: none; }
+      .indice a { flex: none; white-space: nowrap; border: 1px solid var(--borda); background: #fff; }
+      .indice a.ativo { border-color: var(--tom-borda); }
+      fieldset[id^="secao-"] { scroll-margin-top: calc(var(--topo-h, 0px) + 64px); }
+    }
+    @media (max-width: 760px) { .barra-salvar { border-radius: 0; margin: 4px calc(var(--pad-pagina) * -1) 0; padding: 10px var(--pad-pagina); } .barra-salvar .botao { flex: 1 1 auto; } .barra-salvar .estado-form { flex: 1 1 100%; margin-left: 0; } }
+
+    /* ---- a caixa "para imprimir" ao lado do preview das folhas: a aba Imprimir da ficha e a página de Relatórios (static/impressao.js) ---- */
+    .impressao-lado { display: grid; grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); gap: var(--e4); align-items: start; }
+    /* a caixa NÃO rola por dentro (rolar dentro de uma caixa atrasa quem só quer escolher e imprimir, e esconde a barra de imprimir em tela baixa): ela segue a página e quem fica preso na tela é o preview */
+    .impressao-lado .coluna-escolha { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--e4); }      /* (minmax(0, 1fr): nada dentro da caixa a alarga: um nome longo no seletor de quem emite não empurra o resto para fora da vista) */
+    .impressao-lado .preview-impressao { position: sticky; top: calc(var(--topo-h, 60px) + 56px); }                /* (56 = as abas da ficha; a tela de Relatórios, sem abas, sobe isso) */
+    .impressao-lado .coluna-escolha .cartao-secao { margin-bottom: 0; }
+    .impressao-lado .vazio-preview { margin: 0; padding: 40px 16px; text-align: center; background: #fff; border: 1px dashed var(--borda-forte); border-radius: var(--r-md); }
+    /* o quadro ocupa o que sobra da tela; as folhas rolam por dentro dele */
+    iframe.quadro-impressao { display: block; width: 100%; height: calc(100vh - var(--topo-h, 60px) - 80px); min-height: 520px; border: 0; background: transparent; }
+    .barra-selecao { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding: 10px 14px; background: #eef4ff; border: 1px solid #b9d0f3; border-radius: var(--r-md); }
+    .barra-selecao[hidden] { display: none; }
+    .barra-selecao [data-contagem] { font-weight: 600; margin-right: auto; }
+    .selecao-topo { display: flex; justify-content: flex-end; margin: 0 0 8px; }
+    .lista-docs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .lista-docs li { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; min-width: 0; padding: 9px 12px; background: #fff; border: 1px solid var(--borda); border-radius: var(--r-md); }
+    .lista-docs li[hidden] { display: none; }
+    .lista-docs li.removido { background: #fafafa; border-style: dashed; }
+    .lista-docs li.removido .nome-doc { text-decoration: line-through; color: var(--suave); }
+    .lista-docs label.escolha { gap: 10px; flex: 1 1 150px; min-width: 0; font-weight: 400; color: inherit; }
+    .lista-docs .linha-emissor { flex: 1 1 100%; flex-direction: row; align-items: center; gap: 8px; margin: 2px 0 0; font-size: .84rem; font-weight: 600; color: var(--suave); min-width: 0; }
+    .lista-docs .linha-emissor select { width: auto; flex: 1 1 0; min-width: 0; max-width: 100%; padding: 5px 9px; font-size: .86rem; text-overflow: ellipsis; }
+    .lista-docs .sem-caixa { flex: 1 1 150px; min-width: 0; display: flex; align-items: center; gap: 10px; }
+    .lista-docs .nome-doc { font-weight: 600; overflow-wrap: anywhere; }
+    .lista-docs small { display: block; color: var(--suave); font-weight: 400; }
+    .lista-docs .tipo { font-size: .78rem; color: var(--suave); }
+    .chip-doc { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border-radius: var(--r-md); background: #eef4ff; color: #1d4f9c; }
+    .lista-docs .acoes-doc { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+    @media (max-width: 1000px) { .impressao-lado { grid-template-columns: minmax(0, 1fr); } .impressao-lado .preview-impressao { position: static; } iframe.quadro-impressao { height: 70vh; } }
+    @media (max-width: 640px) { .lista-docs .acoes-doc { margin-left: 0; width: 100%; } .impressao-lado .lista-docs .acoes-doc { margin-left: auto; width: auto; } }       /* (na caixa de imprimir o ⋯ fica na linha do documento, à direita: o menu abre para dentro da tela) */
+
+    /* ============================ celular e tablet pequeno ============================ */
+    @media (max-width: 760px) {
+      :root { --pad-pagina: 14px; }
+      main { margin: 18px auto; }
+      h1 { font-size: 1.35rem; }
+      /* ---- topo do celular: uma linha só (menu, marca, sino) e o resto num painel lateral que abre pela esquerda ---- */
+      :root { --altura-topo: 56px; --topo-h: 57px; }              /* (57 = 56 + a borda de baixo) o topo fica preso: o menu está sempre à mão; o índice dos formulários e as abas da ficha descontam esta altura */
+      .topo { position: sticky; background: #fff; backdrop-filter: none; }      /* sem o filtro de desfoque: ele faria da barra a referência do painel fixo */
+      .topo nav { padding: 0 8px; flex-wrap: nowrap; gap: 2px; }
+      .marca { padding: 6px 0; gap: 9px; min-width: 0; }
+      .marca-logo { width: 34px; height: 34px; }
+      .marca strong { font-size: .9rem; }
+      .topo .usuario { margin-left: 0; padding-left: 0; border-left: 0; gap: 2px; flex: none; }
+      .topo .usuario button { padding: 6px 4px; }
+      .topo .usuario .nome { display: none; }
+      .topo .com-menu .usuario .eu, .topo .com-menu .usuario form { display: none; }          /* a conta e o Sair passam para o pé do painel */
+      .topo .menu-botao { display: grid; place-items: center; position: relative; flex: none; width: 44px; height: 44px; margin-left: -4px; padding: 0; border: 0;
+                          border-radius: 50%; background: none; color: var(--texto); cursor: pointer; }
+      .topo .menu-botao:hover { background: #f2f4f7; }
+      .topo .menu-botao:focus-visible, .topo .menu-fechar:focus-visible, .topo .menu-rodape button:focus-visible { outline: 3px solid rgba(91,141,239,.45); outline-offset: 2px; }
+      .topo .menu-botao .icone { width: 24px; height: 24px; }
+      .topo .menu-botao .ponto { position: absolute; top: 8px; right: 8px; width: 9px; height: 9px; border-radius: 50%; background: var(--primaria); border: 2px solid #fff; box-sizing: content-box; }
+      .topo .menu-fundo { display: block; position: fixed; inset: 0; z-index: 1; background: rgba(16,24,40,.5); opacity: 0; visibility: hidden; transition: opacity .2s, visibility 0s linear .2s; }
+      .topo.menu-aberto .menu-fundo { opacity: 1; visibility: visible; transition: opacity .2s; }
+      html.menu-travado { overflow: hidden; }
+      .topo .menu { position: fixed; z-index: 2; top: 0; bottom: 0; left: 0; flex: none; width: min(86vw, 320px); flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px;
+                    padding: 0 12px 14px; background: #fff; box-shadow: var(--sombra-alta); overflow-y: auto; overscroll-behavior: contain;
+                    transform: translateX(-104%); visibility: hidden; transition: transform .22s ease, visibility 0s linear .22s; }
+      .topo.menu-aberto .menu { transform: none; visibility: visible; transition: transform .22s ease; }
+      .topo .menu-cabeca { display: flex; align-items: center; justify-content: space-between; min-height: var(--altura-topo); margin-bottom: 4px; border-bottom: 1px solid var(--borda); }
+      .topo .menu-cabeca strong { padding-left: 12px; font-size: 1rem; letter-spacing: -.01em; }
+      .topo .menu-fechar { display: grid; place-items: center; width: 40px; height: 40px; margin-right: -6px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--suave); cursor: pointer; }
+      .topo .menu-fechar:hover { background: #f2f4f7; color: var(--texto); }
+      .topo .menu .item { flex: none; padding: 12px; gap: 12px; font-size: .98rem; }
+      .topo .menu-icone { display: block; width: 20px; height: 20px; flex: none; }
+      .topo .menu .item .contagem { margin-left: auto; }
+      .topo .menu-rotulo { display: block; padding: 16px 12px 4px; color: var(--suave); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+      .topo .menu .item.novo { margin: 0 !important; padding: 11px 12px; justify-content: flex-start; }
+      .topo .menu-rodape { display: grid; gap: 2px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--borda); }
+      .topo .menu-rodape .eu-menu { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--r-botao); color: var(--texto); text-decoration: none; }
+      .topo .menu-rodape .eu-menu:hover { background: #f2f4f7; }
+      .topo .menu-rodape .inicial { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 50%; background: #eef1f6; color: #475467; font-size: .85rem; font-weight: 700; text-transform: uppercase; }
+      .topo .menu-rodape .eu-menu strong { display: block; font-size: .92rem; line-height: 1.2; overflow-wrap: anywhere; }
+      .topo .menu-rodape .eu-menu small { display: block; color: var(--suave); font-size: .76rem; }
+      .topo .menu-rodape form { margin: 0; }
+      .topo .menu-rodape button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border: 0; border-radius: var(--r-botao); background: none; font: inherit; font-size: .98rem; font-weight: 600; color: var(--suave); text-align: left; cursor: pointer; }
+      .topo .menu-rodape button:hover { background: #f2f4f7; color: var(--vermelho); }
+      @media (prefers-reduced-motion: reduce) { .topo .menu, .topo .menu-fundo { transition: none; } }
+      .ferramentas { gap: 10px; }
+      .busca { flex: 1 1 100%; max-width: none; }
+      .filtro-lista { flex: 1 1 calc(50% - 5px); min-width: 0; }
+      .rodape-lista { justify-content: center; }
+      .paginador button { min-width: 32px; padding: 6px 9px; }
+      fieldset { padding-bottom: 16px; }
+      fieldset > :not(legend) { margin-left: 14px; margin-right: 14px; max-width: calc(100% - 28px); }
+      legend { padding: 12px 14px; }
+      input, select, textarea { font-size: 16px; }        /* evita o zoom automático ao tocar num campo, no iPhone */
+      .botao { min-height: 42px; }
+      .botao.pequeno { min-height: 34px; }
+      .botoes-form .botao { flex: 1 1 100%; }
+      .paciente-escolhido { font-size: .88rem; }
+    }
+    /* lista de pessoas: a tabela só cabe inteira a partir de ~1280px; abaixo disso cada linha vira um cartão (sem rolar de lado) */
+    @media screen and (max-width: 1279px) {
+      .moldura { overflow: visible; background: none; border: 0; box-shadow: none; }
+      table.lista, .lista tbody { display: block; }
+      .lista thead { display: none; }
+      .lista tbody tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 14px; padding: 14px;
+                        background: #fff; border: 1px solid var(--borda); border-radius: var(--raio); box-shadow: var(--sombra); margin-bottom: 10px; }
+      .lista tbody tr:hover { background: #fff; }
+      .lista td, .lista td.livre, .lista td.fixo, .lista td.num { display: block; padding: 0; border: 0; white-space: normal; min-width: 0; text-align: left; }
+      .lista td:empty { display: none; }
+      .lista td:first-child { grid-column: 1 / -1; }
+      .lista td[data-rotulo]::before { content: attr(data-rotulo); display: block; margin-bottom: 3px; color: var(--suave); font-size: .66rem;
+                                        font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+      .lista td:first-child::before { display: none; }
+      .lista td.acao { grid-column: 1 / -1; padding-top: 12px; border-top: 1px solid #f0f2f5; }
+      .lista td.acao .botao { width: 100%; }
+      .lista td.num .sub { text-align: left; }
+      .pessoa { min-width: 0; }
+      .lista td:has(> select.seletor) { grid-column: 1 / -1; }
+      .lista td select.seletor { min-width: 0; width: 100%; max-width: 22rem; }
+      .vazio { background: #fff; border: 1px solid var(--borda); border-radius: var(--raio); }
+    }
+    @media (max-width: 420px) { .entrar { margin: 20px 14px !important; } }
+
+    /* ============================ impressão ============================
+       Tira o que só serve na tela (menu, botões, busca), tira a rolagem das tabelas, deixa o fundo branco e
+       evita cortar cartões e linhas no meio. As listas saem em paisagem (ver o bloco estilo de cada uma). */
+    @media print {
+      @page { size: A4; margin: 12mm 11mm; }
+      html, body { background: #fff !important; }
+      body { color: #000; font-size: 10pt; }
+      * { box-shadow: none !important; animation: none !important; transition: none !important;
+          -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .topo, .voltar-linha, .botao, dialog, .mensagens, .aviso, .aviso-rascunho, .busca, .filtro-lista, .paginador, .por-pagina, .busca-paciente, .botoes-form, .barra-salvar, .indice, .acoes, .acoes-aviso, .faixa-alerta,
+      .atalhos-bloco, .agenda-rodape, .seta, .grupo-avisos summary .icone { display: none !important; }
+      .cabecalho-impressao { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding-bottom: 5px;
+                             border-bottom: 1px solid #888; font-size: 8.5pt; color: #444; }
+      .cabecalho-impressao img { width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px; }
+      main, main.largo { max-width: none; margin: 0; padding: 0; }
+      h1 { font-size: 16pt; }
+      .pagina-topo, .painel-topo { margin-bottom: 10px; }
+      a { color: inherit !important; text-decoration: none !important; }
+      .ferramentas { margin-bottom: 8px; }
+      .segmentado { background: none; padding: 0; overflow: visible; }
+      .segmentado button:not(.ativo) { display: none; }
+      .segmentado button.ativo { padding: 0; background: none; box-shadow: none; color: #000; font-size: 10.5pt; }
+      .moldura { overflow: visible; border: 1px solid #aaa; border-radius: 4px; }
+      .mais-abas, .mais-abas-lista { display: none !important; }
+      table.lista { font-size: 8.5pt; }
+      .lista thead { display: table-header-group; }
+      .lista th, .lista td { padding: 5px 7px; }
+      .lista th { cursor: default; background: #eee; color: #222; }
+      .lista th::after { content: none !important; }
+      .lista th:last-child, .lista td.acao { display: none; }
+      .lista td.livre { min-width: 0; }
+      .lista tr, .evento, .fim, .vaga, .kpi, ul.avisos li, fieldset, .cartao, .paciente-escolhido, dl > div { break-inside: avoid; }
+      .avatar { display: none; }
+      .pessoa { min-width: 0; }
+      .seletor { background-image: none; min-width: 0; padding: 3px 12px; }
+      .bloco, .cartao, fieldset, .vaga, .kpi, .evento { border-color: #aaa; border-radius: 6px; background: #fff; }
+      .bloco { overflow: visible; margin-bottom: 10px; }
+      .bloco-topo { break-after: avoid; }
+      .painel-grade { grid-template-columns: minmax(0, 1fr); }
+      .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+      .kpi { padding: 8px 10px; gap: 8px; }
+      .kpi-icone { display: none; }
+      .kpi-numero { font-size: 1.4rem; }
+      .vagas { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+      .simples th:empty, .simples td:has(> form) { display: none; }
+      input, select, textarea { border: 0; border-bottom: 1px solid #888; border-radius: 0; padding: 2px 0; background: none !important;
+                                appearance: none; -webkit-appearance: none; font-size: 10pt; color: #000; }
+      label { font-size: 8pt; color: #444; }
+      .grade { gap: 6px 10px; }
+      .rodape { color: #444; }
+    }
+    {% block estilo %}{% endblock %}
+  </style>
+</head>
+<body>
+  <!-- ícones (desenhados aqui mesmo; usados com <svg class="icone"><use href="#i-nome"/></svg>) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-mais" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-busca" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+      <symbol id="i-calendario" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+      <symbol id="i-usuarios" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+      <symbol id="i-relogio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+      <symbol id="i-alerta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
+      <symbol id="i-prancheta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4M12 16h4M8 11h.01M8 16h.01"/></symbol>
+      <symbol id="i-seta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></symbol>
+      <symbol id="i-saida" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+      <symbol id="i-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+      <symbol id="i-bandeira" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></symbol>
+      <symbol id="i-documento" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8"/></symbol>
+      <symbol id="i-lixeira" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></symbol>
+      <symbol id="i-impressora" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></symbol>
+      <symbol id="i-baixar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></symbol>
+      <symbol id="i-enviar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/></symbol>
+      <symbol id="i-usuario" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+      <symbol id="i-telefone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></symbol>
+      <symbol id="i-moeda" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M12 6v2m0 8v2"/></symbol>
+      <symbol id="i-casa" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+      <symbol id="i-envelope" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></symbol>
+      <symbol id="i-coracao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+      <symbol id="i-pontos" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+      <symbol id="i-cadeado" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+      <symbol id="i-fechar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+      <symbol id="i-sino" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
+      <symbol id="i-grafico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></symbol>
+      <symbol id="i-ajustes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+      <symbol id="i-lapis" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="topo">
+    <nav{% if usuario_atual and not restricao_da_conta %} class="com-menu"{% endif %}>
+      {% if usuario_atual and not restricao_da_conta %}{% set rascunhos_abertos = quantos_rascunhos() %}
+      {# celular: o botão abre o menu como um painel lateral pela esquerda (o script está no fim); no computador e no tablet ele não aparece #}
+      <button type="button" class="menu-botao" aria-label="Menu" aria-expanded="false" aria-controls="menu-principal"><svg class="icone"><use href="#i-menu"/></svg>{% if rascunhos_abertos %}<span class="ponto" title="Há rascunhos abertos"></span>{% endif %}</button>
+      {% endif %}
+      <a class="marca" href="{{ url_for('home') }}">
+        <img class="marca-logo" src="{{ identidade.url('marca/logo.png') }}" alt="" width="40" height="40">
+        <span><strong>{{ identidade.nome }}</strong><small>{{ identidade.sistema | upper }}</small></span>
+      </a>
+      {% if usuario_atual %}
+      {% if not restricao_da_conta %}{# com a senha provisória (ou o e-mail de um acesso novo por confirmar) nada abre antes: o menu espera #}
+      <div class="menu-fundo" aria-hidden="true"></div>
+      <div class="menu" id="menu-principal">
+      <div class="menu-cabeca"><strong>Menu</strong><button type="button" class="menu-fechar" aria-label="Fechar o menu"><svg class="icone"><use href="#i-fechar"/></svg></button></div>
+      <a class="item {{ 'atual' if request.path == '/' }}" href="{{ url_for('home') }}"><svg class="icone menu-icone"><use href="#i-casa"/></svg>Início</a>
+      <a class="item {{ 'atual' if request.path.startswith('/triagens') }}" href="{{ url_for('lista_triagens') }}"><svg class="icone menu-icone"><use href="#i-prancheta"/></svg>Triagens</a>
+      <a class="item {{ 'atual' if request.path.startswith('/internos') }}" href="{{ url_for('lista_internos') }}"><svg class="icone menu-icone"><use href="#i-usuarios"/></svg>Internos</a>
+      {% if pode('conferir') %}{% set a_conferir = quantos_a_conferir() %}{% if a_conferir or request.path.startswith('/conferir') %}<a class="item {{ 'atual' if request.path.startswith('/conferir') }}" href="{{ url_for('lista_para_conferir') }}" title="Registros importados para conferir com o prontuário físico"><svg class="icone menu-icone"><use href="#i-ok"/></svg>Para conferir{% if a_conferir %}<span class="contagem">{{ a_conferir }}</span>{% endif %}</a>{% endif %}{% endif %}
+      {% if rascunhos_abertos or request.path.startswith('/rascunhos') %}<a class="item {{ 'atual' if request.path.startswith('/rascunhos') }}" href="{{ url_for('lista_rascunhos') }}" title="O que você digitou e ainda não gravou"><svg class="icone menu-icone"><use href="#i-lapis"/></svg>Rascunhos{% if rascunhos_abertos %}<span class="contagem">{{ rascunhos_abertos }}</span>{% endif %}</a>{% endif %}
+      {# o menu só mostra o que o nível de acesso da pessoa permite (permissoes.py) #}
+      {% if pode('relatorios') %}<a class="item {{ 'atual' if request.path.startswith('/relatorios') }}" href="{{ url_for('pagina_relatorios') }}"><svg class="icone menu-icone"><use href="#i-grafico"/></svg>Relatórios</a>{% endif %}
+      {% if pode('cadastros') %}<a class="item {{ 'atual' if request.path.startswith('/cadastros') }}" href="{{ url_for('cadastros') }}"><svg class="icone menu-icone"><use href="#i-ajustes"/></svg>Cadastros</a>{% endif %}
+      {% if pode('triagem') or pode('internacao') %}<span class="menu-rotulo">Criar novo</span>{% endif %}
+      {% if pode('triagem') %}<a class="item novo" href="{{ url_for('nova_triagem') }}"><svg class="icone"><use href="#i-mais"/></svg>Triagem</a>{% endif %}
+      {% if pode('internacao') %}<a class="item novo" href="{{ url_for('formulario') }}"><svg class="icone"><use href="#i-mais"/></svg>Prontuário</a>{% endif %}
+      <div class="menu-rodape">
+        <a class="eu-menu" href="{{ url_for('seguranca') }}"><span class="inicial">{{ usuario_atual.nome[:1] }}</span><span><strong>{{ usuario_atual.nome }}</strong><small>Minha segurança</small></span></a>
+        <form method="post" action="{{ url_for('sair') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button><svg class="icone"><use href="#i-saida"/></svg>Sair</button></form>
+      </div>
+      </div>
+      {% endif %}
+      <span class="usuario">
+        {% if not restricao_da_conta and mostra_o_sino() %}{% set nao_lidas = notificacoes_nao_lidas() %}
+        <a class="sino" href="{{ url_for('lista_notificacoes') }}" title="Notificações{{ ' · ' ~ nao_lidas ~ (' não lidas' if nao_lidas != 1 else ' não lida') if nao_lidas }}"
+           aria-label="Notificações{{ ': ' ~ nao_lidas ~ (' não lidas' if nao_lidas != 1 else ' não lida') if nao_lidas }}"><svg class="icone"><use href="#i-sino"/></svg>{% if nao_lidas %}<span class="contagem">{{ nao_lidas }}</span>{% endif %}</a>
+        {% endif %}
+        <a class="eu" href="{{ url_for('seguranca') }}" title="Minha segurança">
+          <span class="inicial">{{ usuario_atual.nome[:1] }}</span><span class="nome">{{ usuario_atual.nome }}</span></a>
+        <form method="post" action="{{ url_for('sair') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Sair</button></form>
+      </span>
+      {% endif %}
+    </nav>
+  </header>
+  {% if usuario_atual %}
+  <!-- só aparece ao imprimir -->
+  <div class="cabecalho-impressao">
+    <strong><img src="{{ identidade.url('marca/logo.png') }}" alt="" width="16" height="16">{{ identidade.nome }} · {{ identidade.sistema }}</strong>
+    <span>Documento confidencial · <span id="impresso-em" data-usuario="{{ usuario_atual.nome }}"></span></span>
+  </div>
+  {% endif %}
+  {% block conteudo %}{% endblock %}
+  <script nonce="{{ csp_nonce() }}">
+    // menu do celular: o painel abre pela esquerda; fecha tocando fora, no X, no Esc, arrastando para a esquerda ou escolhendo um item
+    (function () {
+      var topo = document.querySelector(".topo");
+      var botao = topo && topo.querySelector(".menu-botao");
+      var lateral = document.getElementById("menu-principal");
+      if (!botao || !lateral) return;
+      var celular = window.matchMedia("(max-width: 760px)");
+      var aberto = false;
+      function abrir() {
+        aberto = true;
+        topo.classList.add("menu-aberto"); document.documentElement.classList.add("menu-travado"); botao.setAttribute("aria-expanded", "true");
+        var fechar = lateral.querySelector(".menu-fechar");
+        if (fechar) fechar.focus({ preventScroll: true });
+      }
+      function fechar(devolverFoco) {
+        if (!aberto) return;
+        aberto = false;
+        topo.classList.remove("menu-aberto"); document.documentElement.classList.remove("menu-travado"); botao.setAttribute("aria-expanded", "false");
+        if (devolverFoco) botao.focus({ preventScroll: true });
+      }
+      botao.addEventListener("click", function () { if (aberto) fechar(true); else abrir(); });
+      topo.querySelector(".menu-fundo").addEventListener("click", function () { fechar(false); });
+      lateral.querySelector(".menu-fechar").addEventListener("click", function () { fechar(true); });
+      lateral.addEventListener("click", function (e) { if (e.target.closest && e.target.closest("a")) fechar(false); });
+      document.addEventListener("keydown", function (e) {
+        if (!aberto) return;
+        if (e.key === "Escape") { e.preventDefault(); fechar(true); return; }
+        if (e.key !== "Tab") return;       // o foco não sai do painel enquanto ela está aberta
+        var itens = lateral.querySelectorAll("a[href], button");
+        if (!itens.length) return;
+        var primeiro = itens[0], ultimo = itens[itens.length - 1];
+        if (e.shiftKey && document.activeElement === primeiro) { e.preventDefault(); ultimo.focus(); }
+        else if (!e.shiftKey && document.activeElement === ultimo) { e.preventDefault(); primeiro.focus(); }
+      });
+      var x0 = null, y0 = 0;
+      lateral.addEventListener("touchstart", function (e) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; }, { passive: true });
+      lateral.addEventListener("touchend", function (e) {
+        if (x0 === null) return;
+        var dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
+        x0 = null;
+        if (dx < -70 && Math.abs(dy) < 60) fechar(false);
+      }, { passive: true });
+      function ao_mudar() { if (!celular.matches) fechar(false); }
+      if (celular.addEventListener) celular.addEventListener("change", ao_mudar); else if (celular.addListener) celular.addListener(ao_mudar);
+      window.addEventListener("pageshow", function () { fechar(false); });       // voltar pelo histórico não reabre a página com o painel aberto
+    })();
+  </script>
+  <script nonce="{{ csp_nonce() }}">
+    // "Voltar" volta uma página no histórico (a lista continua como estava); sem histórico, segue o endereço do botão.
+    // Os botões marcados com data-substituir (colunas e quem assina nos relatórios) trocam a página em vez de empilhar histórico.
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest ? e.target.closest("a.voltar, a[data-substituir]") : null;
+      if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (a.hasAttribute("data-substituir")) { e.preventDefault(); location.replace(a.href); return; }
+      if (a.hasAttribute("data-direto")) return;
+      try {
+        if (history.length > 1 && document.referrer && new URL(document.referrer).origin === location.origin) { e.preventDefault(); history.back(); }
+      } catch (erro) { /* sem referência: segue o endereço */ }
+    });
+  </script>
+  <script nonce="{{ csp_nonce() }}">
+    // avisos de confirmação (flash): cartão no canto, com botão de fechar, que some sozinho depois de alguns segundos
+    (function () {
+      var lista = document.querySelector(".mensagens");
+      if (!lista) return;
+      lista.setAttribute("role", "status");
+      Array.prototype.forEach.call(lista.children, function (li, i) {
+        var fechar = document.createElement("button");
+        fechar.type = "button"; fechar.className = "fechar-aviso"; fechar.setAttribute("aria-label", "Fechar aviso"); fechar.textContent = "×";
+        li.appendChild(fechar);
+        function sair() { li.classList.add("saindo"); setTimeout(function () { li.remove(); }, 320); }
+        fechar.addEventListener("click", sair);
+        setTimeout(sair, 7000 + i * 900);
+      });
+    })();
+  </script>
+  <script nonce="{{ csp_nonce() }}">
+    // na impressão: abre os grupos recolhidos (senão o conteúdo some do papel) e carimba quando e quem imprimiu
+    (function () {
+      var abertos = [];
+      window.addEventListener("beforeprint", function () {
+        var carimbo = document.getElementById("impresso-em");
+        if (carimbo) carimbo.textContent = "impresso em " + new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) + " por " + carimbo.dataset.usuario;
+        abertos = Array.prototype.filter.call(document.querySelectorAll("details:not([open])"), function (d) { d.open = true; return true; });
+      });
+      window.addEventListener("afterprint", function () { abertos.forEach(function (d) { d.open = false; }); });
+    })();
+  </script>
+</body>
+</html>

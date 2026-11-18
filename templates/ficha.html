@@ -1,0 +1,844 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import linha_voltar with context %}
+{% from "_cartao.html" import cartao, dados %}
+{#
+  O prontuário da PESSOA, numa página só: o cabeçalho de identidade e, embaixo, as ABAS por função (Resumo, Dados pessoais, Serviço Social, Saúde, Financeiro,
+  Imprimir e Escaneados). Quem teve mais de uma passagem (ou uma triagem) vê, entre o cabeçalho e as abas, a faixa de passagens: escolher uma troca o cabeçalho e as
+  abas para a dela, sem sair da página (cada passagem é uma "visão" já na página; a do endereço aberto sai à mostra). A aba "Imprimir" tem a caixa que escolhe os documentos e, ao lado,
+  o preview das folhas (/internacoes/<id>/impressos?embutido=1), carregado só quando a aba é aberta; "Imprimir" manda imprimir o próprio preview (não há outra página de impressão).
+  ?itens=a,b marca os documentos (os atalhos de imprimir usam) e ?imprimir=1 já manda imprimir ao abrir. As âncoras antigas (#acolhimento, #saude,
+  #alta, #parcelas, #escaneados, #envelope) valem para a passagem do endereço aberto e abrem a aba onde estão; #aba-social etc. abre a aba pedida.
+  Variáveis: i (o registro do endereço), passagens (todas, do mais novo para o mais antigo), n_passagens, rotulos_das_areas, areas_de_anexo e as de sempre.
+#}
+{% macro selo_estado(estado, feminino=False) -%}
+  {%- if estado == 'finalizado' %}<span class="selo ativo">{{ 'Finalizada' if feminino else 'Finalizado' }}</span>
+  {%- elif estado == 'rascunho' %}<span class="selo lista_espera">Em andamento</span>
+  {%- else %}<span class="selo">{{ 'Não iniciada' if feminino else 'Não iniciado' }}</span>{% endif -%}
+{%- endmacro %}
+{% set p = i.pessoa %}
+{# cor do cabeçalho de identidade, pela situação #}
+{% set tons = {'ativo': 'verde', 'em_admissao': 'azul', 'lista_espera': 'amarelo', 'desistiu': 'rosa', 'rejeitado': 'neutro', 'inativo': 'neutro'} %}
+
+{% block titulo %}{{ p.nome }}{% endblock %}
+
+{% block estilo %}
+  /* ---- cabeçalho de identidade ---- */
+  .ficha-topo { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 20px 22px; margin-bottom: var(--e4);
+                background: linear-gradient(115deg, var(--tom-suave), #fff 75%); border: 1px solid var(--tom-borda); border-radius: var(--r-lg); box-shadow: var(--sombra); }
+  .ficha-topo .identidade { flex: 1 1 230px; min-width: 0; }
+  .ficha-topo .linha-nome { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+  .ficha-topo h1 { margin: 0; font-size: var(--t-titulo); overflow-wrap: anywhere; }
+  .fatos { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 8px 0 0; font-size: .9rem; color: var(--neutro); }
+  .fato { display: inline-flex; align-items: center; gap: 6px; }
+  .fato .icone { color: var(--tom); }
+  .ficha-topo .ids { margin: 6px 0 0; font-size: .8rem; color: var(--suave); }
+  .ficha-topo .acoes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .alertas { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 10px 0 0; padding: 0; }
+  .alerta { display: inline-flex; align-items: center; padding: 3px 11px; border-radius: 999px; font-size: .8rem; font-weight: 600; text-decoration: none;
+            color: var(--a-cor); background: var(--a-fundo); border: 1px solid var(--a-borda); }
+  .alerta:hover { filter: brightness(.96); }
+  .alerta.amarelo { --a-cor: #7a5200; --a-fundo: #fff6dd; --a-borda: #f1d98f; }
+  .alerta.vermelho { --a-cor: #b3261e; --a-fundo: #fdecea; --a-borda: #f3b9b4; }
+  .alerta.azul { --a-cor: #1d4f9c; --a-fundo: #e8f0fc; --a-borda: #b9d0f3; }
+  /* ---- faixa de passagens: escolher uma troca a visão, sem sair da página ---- */
+  .faixa-passagens { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; scrollbar-width: thin; padding: 2px 2px 12px; margin: 0 0 2px; }
+  .faixa-passagens .legenda { flex: 0 0 auto; align-self: center; margin-right: 4px; font-size: .8rem; font-weight: 700; color: var(--suave); text-transform: uppercase; letter-spacing: .05em; }
+  .faixa-passagens button { flex: 0 0 auto; display: grid; gap: 3px; justify-items: start; text-align: left; min-width: 168px; padding: 9px 13px; background: #fff; color: var(--texto);
+                            font: inherit; border: 1px solid var(--borda); border-radius: var(--r-md); cursor: pointer; }
+  .faixa-passagens button:hover { border-color: #b9c4d6; }
+  .faixa-passagens button[aria-pressed="true"] { border-color: #1d4f9c; background: #eef4ff; box-shadow: 0 0 0 2px #dbe7fb; }
+  .faixa-passagens .rotulo { font-weight: 700; font-size: .92rem; }
+  .faixa-passagens small { color: var(--suave); font-size: .8rem; }
+  /* ---- abas por função ---- */
+  /* a barra gruda no alto (.abas-barra); quando as abas não cabem, o botão ⌄ dela lista todas (static/abas-mais.js) */
+  .abas-barra { position: sticky; top: var(--topo-h, 60px); z-index: 20; margin: 0 0 var(--e4); background: rgba(255,255,255,.95); backdrop-filter: blur(10px); border-bottom: 1px solid var(--borda); }
+  .abas-barra > .abas-prontuario { flex: 1 1 auto; }
+  .abas-prontuario { display: flex; align-items: center; gap: 2px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .abas-prontuario a.aba { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; padding: 12px 14px; font-weight: 600; font-size: .92rem; color: var(--suave);
+                           text-decoration: none; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+  .abas-prontuario a.aba:hover { color: #1f2937; }
+  .abas-prontuario a.aba[aria-current="true"] { color: #1d4f9c; border-bottom-color: #1d4f9c; }
+  .abas-prontuario .contagem { min-width: 20px; padding: 0 6px; border-radius: 999px; background: #eef1f5; color: var(--suave); font-size: .75rem; line-height: 20px; text-align: center; }
+  .abas-prontuario .mini-id { display: none; margin-left: auto; padding: 0 4px 0 14px; font-size: .85rem; font-weight: 600; color: var(--suave); white-space: nowrap; }
+  .abas-prontuario.rolou .mini-id { display: block; }
+  .painel-aba .cartao-secao, .painel-aba .impressao-lado { scroll-margin-top: calc(var(--topo-h, 60px) + 64px); }
+  .grade-dupla { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--e4); align-items: start; }
+  .ficha-grade { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 0 var(--e4); align-items: start; }
+  @media (max-width: 1000px) { .ficha-grade, .grade-dupla { grid-template-columns: minmax(0, 1fr); } }
+  /* ---- linha do tempo da triagem / internação ---- */
+  .etapas { list-style: none; margin: 0 0 14px; padding: 0; position: relative; }
+  .etapas li { position: relative; padding: 0 0 14px 22px; }
+  .etapas li:last-child { padding-bottom: 0; }
+  .etapas li::before { content: ""; position: absolute; left: 4px; top: 5px; width: 9px; height: 9px; border-radius: 50%; background: var(--tom); box-shadow: 0 0 0 3px var(--tom-suave); }
+  .etapas li::after { content: ""; position: absolute; left: 8px; top: 18px; bottom: 0; width: 1px; background: var(--tom-borda); }
+  .etapas li:last-child::after { display: none; }
+  .etapas span { display: block; font-size: var(--t-rotulo); color: var(--suave); }
+  .etapas strong { font-weight: 600; }
+  .contatos { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+  .contatos li { display: flex; align-items: center; gap: 8px; }
+  .contatos .icone { color: var(--tom); }
+  .contatos small { color: var(--suave); }
+  .endereco { margin: 0 0 14px; line-height: 1.5; }
+  table.simples { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  .simples th { padding: 10px 12px; text-align: left; background: #f9fafb; color: var(--suave); font-size: .7rem; font-weight: 700;
+                text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--borda); white-space: nowrap; }
+  .simples td { padding: 11px 12px; text-align: left; border-bottom: 1px solid #f0f2f5; vertical-align: middle; }
+  .simples tbody tr:last-child td { border-bottom: 0; }
+  .simples td.num { text-align: right; white-space: nowrap; }
+  .simples form { margin: 0; }
+  .tabela-rolavel { overflow-x: auto; margin: 0 -18px; padding: 0 18px; }
+  /* ---- situação (no Resumo) e o que cada aba mostra: a situação, as ações e o menu "Mais" ---- */
+  .area-linha { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid #f0f2f5; scroll-margin-top: calc(var(--topo-h, 60px) + 64px); }
+  .area-linha:first-child { padding-top: 0; }
+  .area-linha:last-child { border-bottom: 0; padding-bottom: 0; }
+  .area-info { display: flex; align-items: center; gap: 12px; flex: 1 1 220px; min-width: 0; }
+  .area-info .icone-secao { flex: 0 0 auto; }
+  .area-info strong { display: block; }
+  .situacao { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; font-size: .88rem; color: var(--neutro); margin-top: 3px; }
+  .area-acoes { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .area-acoes form { margin: 0; display: flex; gap: 8px; }
+  .acoes-cartao { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .acoes-cartao form { margin: 0; }
+  .situacao-cartao { margin: 0; }
+  details.mais summary.botao { padding: 6px 10px; }
+  .menu-mais form { margin: 0; }
+  .menu-mais .mini-rotulo { display: block; padding: 6px 12px 0; font-size: .78rem; color: var(--suave); }
+  .menu-mais .vincular-area { display: flex; gap: 6px; padding: 4px 8px 6px; }
+  .menu-mais .vincular-area button { width: auto; }
+  /* ---- escaneados e a lista de quem só abre os impressos que lê ---- */
+  .topo-escaneados { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+  .filtro-area { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+  .filtro-area button { padding: 4px 12px; border: 1px solid var(--borda); border-radius: 999px; background: #fff; color: var(--neutro); font: inherit; font-size: .84rem; cursor: pointer; }
+  .filtro-area button[aria-pressed="true"] { background: #eef4ff; border-color: #1d4f9c; color: #1d4f9c; font-weight: 600; }
+  .chip-area { display: inline-block; padding: 1px 9px; border-radius: 999px; background: #eef1f5; color: var(--neutro); font-size: .76rem; font-weight: 600; }
+  .chip-area.saude { background: #e3f6f3; color: #0f6b5f; } .chip-area.social { background: #fde8ef; color: #a02351; } .chip-area.financeiro { background: #fff3d6; color: #7a5200; }
+  .chip-pdf { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border-radius: var(--r-md); background: var(--vermelho-claro); color: var(--vermelho); font-size: .66rem; font-weight: 800; }
+  .vazio-docs { margin: 0; }
+  /* ---- janela de anexar o PDF ---- */
+  dialog#anexar { max-width: 520px; width: calc(100vw - 32px); }
+  form.novo-anexo { display: grid; gap: 12px; }
+  form.novo-anexo small { color: var(--suave); }
+  .nova-parcela-caixa > summary { list-style: none; cursor: pointer; display: inline-flex; }
+  .nova-parcela-caixa > summary::-webkit-details-marker { display: none; }
+  form.nova-parcela { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--borda); }
+  form.nova-parcela label { width: 150px; }
+  @media (max-width: 640px) {
+    .ficha-topo { padding: 16px; gap: 14px; }
+    .ficha-topo .avatar.grande { width: 52px; height: 52px; font-size: 1.1rem; }
+    .ficha-topo .acoes { width: 100%; }
+    .ficha-topo .acoes .botao, .ficha-topo details.mais { flex: 1 1 auto; }
+    .ficha-topo details.mais > summary { width: 100%; }
+    .dados { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+    form.nova-parcela label { width: calc(50% - 5px); }
+    form.nova-parcela .botao { flex: 1 1 100%; }
+    .simples th, .simples td { padding-left: 6px; padding-right: 6px; }
+    .faixa-passagens button { min-width: 148px; }
+    .abas-prontuario a.aba { padding: 11px 11px; }
+    .area-acoes { margin-left: 0; width: 100%; }
+      }
+  @media print {
+    .ficha-topo .acoes, details.mais, .area-acoes, .acoes-doc, .acoes-cartao, .filtro-area, .alertas, .abas-barra, .abas-prontuario, .faixa-passagens, .topo-escaneados { display: none !important; }
+    .ficha-topo { background: none; border-color: #aaa; padding: 10px 12px; }
+    .ficha-grade, .grade-dupla { display: block; }
+    .painel-aba[hidden] { display: block !important; }
+    .painel-aba[data-painel="imprimir"], .barra-selecao { display: none !important; }
+    .cartao-secao { box-shadow: none; overflow: visible; border-color: #aaa; }
+    .tabela-rolavel { overflow: visible; }
+  }
+{% endblock %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('lista_triagens') if i.e_triagem else url_for('lista_internos')) }}
+  {% with msgs = get_flashed_messages() %}
+    {% if msgs %}<ul class="mensagens">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+  {% endwith %}
+
+  {# ---------------------------------------------------------------- uma "visão" por passagem (ou triagem): o cabeçalho, a faixa de passagens e as abas. Só a do endereço aberto aparece; a faixa troca de uma para a outra #}
+  {% for r in passagens %}
+  {% set o = r.o %}{% set pre = r.prefixo %}{% set ac = r.acolhimento %}{% set sa = r.saude %}{% set al = r.alta %}
+  {% set tom = tons[o.status] | default('neutro') %}
+  {% set escaneados_ativos = r.escaneados | rejectattr('excluido_em') | list %}
+  {% set tem_escaneados = r.escaneados or pode('anexar') %}
+  <div class="visao" data-passagem="{{ o.id }}"{{ ' hidden' if not r.aberta }}>
+
+    <header class="ficha-topo tom-{{ tom }}">
+      <span class="avatar grande av{{ avatar[1] }}" aria-hidden="true">{{ avatar[0] }}</span>
+      <div class="identidade">
+        <div class="linha-nome">
+          <h1>{{ p.nome }}</h1>
+          <span class="selo {{ o.status }}">{{ o.status_txt }}</span>
+        </div>
+        <p class="fatos">
+          {% if idade is not none %}<span class="fato">{{ idade }} anos</span>{% endif %}
+          <span class="chip {{ o.categoria_tipo }}">{{ o.categoria }}</span>
+          {# o cabeçalho só traz o que se deduz (há quanto tempo, previsão); as datas em si ficam na aba Resumo #}
+          {% if r.duracao %}
+            <span class="fato"><svg class="icone"><use href="#i-calendario"/></svg>{{ 'Internado há ' ~ r.duracao if o.status == 'ativo' else 'Ficou ' ~ r.duracao ~ ' internado' }}</span>
+          {% endif %}
+          {% if o.status == 'ativo' and r.previsao %}<span class="fato"><svg class="icone"><use href="#i-relogio"/></svg>Previsão de saída {{ r.previsao | data }}</span>{% endif %}
+          {% if o.resp_nome %}<span class="fato"><svg class="icone"><use href="#i-usuario"/></svg>{{ o.resp_nome }}{{ ' (' ~ o.parentesco ~ ')' if o.parentesco }}</span>{% endif %}
+          {% if p.cpf %}<span class="fato">CPF {{ p.cpf | cpf }}</span>{% endif %}
+        </p>
+        <p class="ids"><strong>Prontuário nº {{ p.id }}</strong> · {% if o.numero_da_passagem %}passagem {{ o.numero_da_passagem }} de {{ n_passagens }}{% else %}triagem{% endif %} · registro nº {{ o.id }}</p>
+        {% set alertas = [] %}
+        {% if o.status == 'inativo' and o.envelope == 'pendente' %}{% set _ = alertas.append(('Prontuário em papel na casa de acolhida' ~ (' · saiu ' ~ r.envelope_tempo if r.envelope_tempo else ''), 'vermelho' if r.envelope_atrasado else 'amarelo', 'envelope')) %}{% endif %}
+        {% if ac.estado != 'finalizado' and o.status in ('em_admissao', 'lista_espera', 'ativo') %}{% set _ = alertas.append(('Acolhimento social ' ~ ('em andamento' if ac.estado == 'rascunho' else 'não iniciado'), 'amarelo', 'acolhimento')) %}{% endif %}
+        {% if al is not none and al.estado != 'finalizado' %}{% set _ = alertas.append(('Relatório de alta ' ~ ('em andamento' if al.estado == 'rascunho' else 'não escrito'), 'amarelo', 'alta')) %}{% endif %}
+        {% if sa is not none and o.status == 'ativo' and sa.estado != 'finalizado' and (pode_ler_saude or pode_escrever_saude) %}{% set _ = alertas.append(('Ficha de saúde ' ~ ('em andamento' if sa.estado == 'rascunho' else 'não iniciada'), 'amarelo', 'saude')) %}{% endif %}
+        {% if o.a_conferir and pode('conferir') %}{% set _ = alertas.append(('Registro importado a conferir', 'azul', 'conferir')) %}{% endif %}
+        {% if alertas %}<ul class="alertas" aria-label="Pontos de atenção">{% for texto, cor, ancora in alertas %}<li><a class="alerta {{ cor }}" href="#{{ pre ~ ancora }}">{{ texto }}</a></li>{% endfor %}</ul>{% endif %}
+      </div>
+      {# cada botão aparece só para quem o nível de acesso permite (permissoes.py) #}
+      <div class="acoes">
+        {% if pode('triagem' if o.e_triagem else 'internacao') %}<a class="botao" href="{{ url_for('editar_internacao', id=o.id) }}">Editar</a>{% endif %}
+        {% if pode('internacao', 'triagem', 'excluir') %}
+        <details class="mais">
+          <summary class="botao secundario"><svg class="icone"><use href="#i-pontos"/></svg>Mais</summary>
+          <div class="menu-mais">
+            {% if pode('internacao') %}<a href="{{ url_for('formulario', pessoa=p.id) }}"><svg class="icone"><use href="#i-casa"/></svg>Nova internação desta pessoa</a>{% endif %}
+            {% if pode('triagem') %}<a href="{{ url_for('nova_triagem', pessoa=p.id) }}"><svg class="icone"><use href="#i-prancheta"/></svg>Nova triagem desta pessoa</a>{% endif %}
+            {% if pode('excluir') %}
+            {% if pode('internacao', 'triagem') %}<hr>{% endif %}
+            <button type="button" class="item-perigo" data-excluir="{{ o.id }}"><svg class="icone"><use href="#i-lixeira"/></svg>Excluir registro</button>
+            {% endif %}
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    </header>
+
+    {% if o.a_conferir %}
+    <div class="caixa-info" id="{{ pre }}conferir" role="note"><strong>Registro importado</strong> ({{ o.origem_txt }}). São dados parciais: confira com o prontuário físico e complete o que faltar (datas, convênio, CPF).
+      {% if pode('conferir') %}<span style="display: inline-flex; gap: 8px; flex-wrap: wrap; margin-left: 8px; vertical-align: middle;">
+        <a class="botao pequeno" href="{{ url_for('editar_internacao', id=o.id, conferir=1) }}">Conferir agora</a>
+        <form method="post" action="{{ url_for('marcar_conferido', id=o.id) }}" style="margin: 0;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="botao pequeno secundario" type="submit">Marcar como conferido</button></form>
+      </span>{% endif %}</div>
+    {% elif o.conferido %}
+    <div class="caixa-info" role="note">Registro importado ({{ o.origem_txt }}), <strong>conferido com o prontuário físico</strong> por {{ o.conferido_por or '—' }} em {{ o.conferido_em.strftime('%d/%m/%Y') }}.
+      {% if pode('conferir') %}<form method="post" action="{{ url_for('marcar_conferido', id=o.id) }}" style="display: inline; margin: 0 0 0 8px;"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="desfazer" value="1"><button class="botao pequeno secundario" type="submit">Reabrir conferência</button></form>{% endif %}</div>
+    {% endif %}
+
+    {# ---------------------------------------------------------------- a faixa de passagens (só de quem tem mais de um registro) #}
+    {% if passagens | length > 1 %}
+    <nav class="faixa-passagens" aria-label="Passagens desta pessoa">
+      <span class="legenda">{{ 'Passagens' if n_passagens else 'Triagens' }}</span>
+      {% for x in passagens %}
+      <button type="button" data-ir-passagem="{{ x.o.id }}" data-endereco="{{ url_for('ficha', id=x.o.id) }}" aria-pressed="{{ 'true' if x.o.id == o.id else 'false' }}">
+        <span class="rotulo">{{ x.rotulo }}{{ ' · mais recente' if x.numero and x.numero == n_passagens and n_passagens > 1 }}</span>
+        <small>{{ x.periodo }}</small>
+        <span class="selo {{ x.o.status }}">{{ x.o.status_txt }}</span>
+      </button>
+      {% endfor %}
+    </nav>
+    {% endif %}
+
+    {# ---------------------------------------------------------------- as abas, por função #}
+    <div class="abas-barra rolavel-mais">
+    <nav class="abas-prontuario" data-mais-abas aria-label="Seções do prontuário">
+      <a class="aba" href="#aba-resumo" data-aba="resumo">Resumo</a>
+      <a class="aba" href="#aba-pessoa" data-aba="pessoa">Dados pessoais</a>
+      <a class="aba" href="#aba-social" data-aba="social">Serviço Social</a>
+      {% if sa is not none %}<a class="aba" href="#aba-saude" data-aba="saude">Saúde</a>{% endif %}
+      <a class="aba" href="#aba-financeiro" data-aba="financeiro">Financeiro</a>
+      {% if r.documentos %}<a class="aba" href="#aba-imprimir" data-aba="imprimir">Imprimir</a>{% endif %}
+      {% if tem_escaneados %}<a class="aba" href="#aba-escaneados" data-aba="escaneados">Escaneados{% if escaneados_ativos %}<span class="contagem">{{ escaneados_ativos | length }}</span>{% endif %}</a>{% endif %}
+      <span class="mini-id">{{ p.nome }}</span>
+    </nav>
+    </div>
+
+    {# ---------------- Resumo: a internação, o responsável e em que pé está cada área #}
+    <div class="painel-aba" data-painel="resumo">
+      <div class="ficha-grade">
+        <div class="coluna-principal">
+          {% call cartao('Triagem' if o.e_triagem else 'Internação', 'calendario', 'azul') %}
+            {% set etapas = [('1º contato', [o.primeiro_contato | data, o.hora_primeiro_contato | hora] | select | join(' ')),
+                             ('Triagem', ([o.data_triagem | data, o.hora_triagem | hora] | select | join(' ')) ~ (' · ' ~ o.modalidade if o.modalidade and o.data_triagem else '')),
+                             ('Internação agendada', [o.internacao_agendada | data, o.hora_agendada | hora] | select | join(' ')),
+                             ('Internado em (efetiva)', [o.inicio | data, o.hora_internacao | hora] | select | join(' ')),
+                             ('Saída', ((o.termino | data) ~ (' · ' ~ o.motivo if o.motivo else '')) if o.termino else '')] | selectattr(1) | list %}
+            {% if etapas %}
+              <ol class="etapas">{% for rotulo, valor in etapas %}<li><span>{{ rotulo }}</span><strong>{{ valor }}</strong></li>{% endfor %}</ol>
+            {% endif %}
+            {{ dados([('Categoria', o.categoria), ('Contribuição', (o.contribuicao_valor | reais) ~ (' — ' ~ o.contribuicao_condicoes if o.contribuicao_condicoes else ''))]) }}
+          {% endcall %}
+
+          {% call cartao('Responsável', 'usuarios', 'roxo') %}
+            {{ dados([('Nome', (o.resp_nome ~ (' (' ~ o.parentesco ~ ')' if o.parentesco else '')) if o.resp_nome else ''),
+                      ('CPF', o.resp_cpf | cpf), ('RG', o.resp_rg | rg)]) }}
+          {% endcall %}
+        </div>
+
+        <aside class="coluna-lateral">
+          {% call cartao('Situação', 'prancheta', 'turquesa') %}
+            <div class="area-linha">
+              <div class="area-info">
+                <span class="icone-secao tom-rosa" aria-hidden="true"><svg class="icone"><use href="#i-coracao"/></svg></span>
+                <div><strong>Acolhimento social</strong>
+                  <div class="situacao">{{ selo_estado(ac.estado) }}{% if ac.em %}<span>{{ ac.em.strftime('%d/%m/%Y') }}</span>{% endif %}</div></div>
+              </div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="#aba-social">Abrir</a></div>
+            </div>
+            {% if sa is not none %}
+            <div class="area-linha">
+              <div class="area-info">
+                <span class="icone-secao tom-turquesa" aria-hidden="true"><svg class="icone"><use href="#i-prancheta"/></svg></span>
+                <div><strong>Ficha de saúde</strong>
+                  <div class="situacao">{{ selo_estado(sa.estado, True) }}{% if sa.em %}<span>{{ sa.em.strftime('%d/%m/%Y') }}</span>{% endif %}</div></div>
+              </div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="#aba-saude">Abrir</a></div>
+            </div>
+            {% endif %}
+            {% if al is not none %}
+            <div class="area-linha">
+              <div class="area-info">
+                <span class="icone-secao tom-roxo" aria-hidden="true"><svg class="icone"><use href="#i-documento"/></svg></span>
+                <div><strong>Relatório de alta</strong>
+                  <div class="situacao">{{ selo_estado(al.estado) }}{% if al.em %}<span>{{ al.em.strftime('%d/%m/%Y') }}</span>{% endif %}</div></div>
+              </div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="#aba-social">Abrir</a></div>
+            </div>
+            {% endif %}
+            {# ---- prontuário em papel (o envelope de quem recebeu baixa) #}
+            {% if o.status == 'inativo' %}
+            <div class="area-linha" id="{{ pre }}envelope">
+              <div class="area-info">
+                <span class="icone-secao tom-{{ 'verde' if o.envelope == 'recebido' else 'amarelo' if o.envelope == 'pendente' else 'neutro' }}" aria-hidden="true"><svg class="icone"><use href="#i-envelope"/></svg></span>
+                <div>
+                  <strong>Prontuário em papel</strong>
+                  <div class="situacao">
+                    {% if o.envelope == 'recebido' %}
+                      <span class="selo ativo">No escritório</span>
+                      {% if o.envelope_recebido_em %}<span>desde {{ o.envelope_recebido_em | data }}</span>{% endif %}
+                    {% elif o.envelope == 'pendente' %}
+                      <span class="selo {{ 'desistiu' if r.envelope_atrasado else 'lista_espera' }}">Na casa de acolhida</span>
+                      {% if r.envelope_tempo %}<span>saiu {{ r.envelope_tempo }}{{ ' · cobrar a casa de acolhida' if r.envelope_atrasado }}</span>{% endif %}
+                    {% else %}
+                      <span class="selo">Sem registro</span><span>Voltou ao escritório?</span>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+              {% if pode('envelope') %}
+              <div class="area-acoes">
+                <form method="post" action="{{ url_for('registrar_envelope', id=o.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  {% if o.envelope == 'recebido' %}
+                    <button class="botao secundario pequeno" name="situacao" value="pendente">Desfazer</button>
+                  {% elif o.envelope == 'pendente' %}
+                    <button class="botao suave pequeno" name="situacao" value="recebido">Chegou ao escritório</button>
+                  {% else %}
+                    <button class="botao suave pequeno" name="situacao" value="recebido">Sim, voltou</button>
+                    <button class="botao secundario pequeno" name="situacao" value="pendente">Não, está na casa de acolhida</button>
+                  {% endif %}
+                </form>
+              </div>
+              {% endif %}
+            </div>
+            {% endif %}
+            <div class="area-linha">
+              <div class="area-info">
+                <span class="icone-secao tom-amarelo" aria-hidden="true"><svg class="icone"><use href="#i-moeda"/></svg></span>
+                <div><strong>Parcelas</strong><div class="situacao"><span>{{ o.parcelas | length }} lançada{{ '' if o.parcelas | length == 1 else 's' }}</span></div></div>
+              </div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="#aba-financeiro">Abrir</a></div>
+            </div>
+            {% if tem_escaneados %}
+            <div class="area-linha">
+              <div class="area-info">
+                <span class="icone-secao tom-neutro" aria-hidden="true"><svg class="icone"><use href="#i-documento"/></svg></span>
+                <div><strong>Documentos escaneados</strong><div class="situacao"><span>{{ escaneados_ativos | length }} anexado{{ '' if escaneados_ativos | length == 1 else 's' }}</span></div></div>
+              </div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="#aba-escaneados">Abrir</a></div>
+            </div>
+            {% endif %}
+          {% endcall %}
+        </aside>
+      </div>
+    </div>
+
+    {# ---------------- Dados pessoais: o que é da pessoa (vale para todas as passagens) #}
+    <div class="painel-aba" data-painel="pessoa" hidden>
+      <div class="grade-dupla">
+        <div>
+          {% call cartao('Dados pessoais', 'usuario', 'azul') %}
+            {{ dados([('CPF', p.cpf | cpf), ('RG', p.rg | rg),
+                      ('Nascimento', p.nascimento | data),
+                      ('Cartão SUS', p.cartao_sus),
+                      ('Estado civil', (p.estado_civil ~ (' — ' ~ p.estado_civil_outro if p.estado_civil_outro else '')) if p.estado_civil else ''),
+                      ('Cônjuge', p.conjuge), ('Mãe', p.mae), ('Escolaridade', p.escolaridade), ('Profissão', p.profissao), ('Religião', p.religiao)]) }}
+          {% endcall %}
+        </div>
+        <div>
+          {% call cartao('Endereço e contatos', 'pin', 'verde') %}
+            {% set rua = [p.endereco, p.numero] | select | join(', ') %}
+            {% set local = [p.bairro, [p.cidade, p.estado] | select | join('/')] | select | join(' · ') %}
+            {% set telefones = [(p.contato1, 'família'), (p.contato2, 'contato 2'), (p.contato3, 'do acolhido')] | selectattr(0) | list %}
+            {% if rua or local or p.cep %}
+              <p class="endereco">{% if rua %}<strong>{{ rua }}</strong><br>{% endif %}{{ local }}{{ (' · CEP ' ~ (p.cep | cep)) if p.cep }}</p>
+            {% endif %}
+            {% if telefones %}
+              <ul class="contatos">{% for numero, quem in telefones %}<li><svg class="icone"><use href="#i-telefone"/></svg>{{ numero }} <small>{{ quem }}</small></li>{% endfor %}</ul>
+            {% endif %}
+            {% if not (rua or local or p.cep) or not telefones %}
+              <p class="nao-informado">Não informado: {{ [('endereço' if not (rua or local or p.cep)), ('contatos' if not telefones)] | select | join(', ') }}</p>
+            {% endif %}
+          {% endcall %}
+        </div>
+      </div>
+    </div>
+
+    {# ---------------- Serviço Social: o acolhimento e, de quem recebeu baixa, o relatório de alta #}
+    <div class="painel-aba" data-painel="social" hidden>
+      <div class="grade-dupla">
+        <div>
+          {% call cartao('Acolhimento social', 'coracao', 'rosa', id=pre ~ 'acolhimento') %}
+            <div class="situacao situacao-cartao">
+              {% if ac.estado == 'finalizado' %}
+                <span class="selo ativo">Finalizado</span>
+                <span>{{ ac.em.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ ac.por if pode_ler_social and ac.por }}</span>
+                {% if pode_ler_social %}
+                  {% if ac.risco %}<span class="selo {{ {'Baixo': 'ativo', 'Médio': 'lista_espera', 'Alto': 'desistiu'}[ac.risco] }}">Risco {{ ac.risco | lower }}</span>{% endif %}
+                  {% if ac.parecer %}<span class="selo {{ 'rejeitado' if ac.parecer.startswith('Não') else 'lista_espera' if 'ressalvas' in ac.parecer else 'ativo' }}">{{ ac.parecer }}</span>{% endif %}
+                {% endif %}
+              {% elif ac.estado == 'rascunho' %}
+                <span class="selo lista_espera">Em andamento</span>
+                <span>salvo em {{ ac.em.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ ac.por if pode_ler_social and ac.por }}</span>
+              {% else %}
+                <span class="selo{{ ' desistiu' if o.status == 'rejeitado' }}">Não iniciado</span>
+              {% endif %}
+            </div>
+            {% if pode_servico_social or ac.historico %}
+            <div class="acoes-cartao">
+              {% if pode_servico_social %}
+                <a class="botao {{ 'secundario' if ac.estado == 'finalizado' else 'suave' }} pequeno" href="{{ url_for('relatorio_social', id=o.id) }}">{{ 'Alterar' if ac.estado == 'finalizado' else 'Continuar' if ac.estado == 'rascunho' else 'Preencher' }}</a>
+              {% endif %}
+              {% if ac.historico %}<a class="botao secundario pequeno" href="{{ url_for('historico_do_relatorio', id=o.id, tipo='social') }}">Histórico de versões</a>{% endif %}
+            </div>
+            {% endif %}
+          {% endcall %}
+        </div>
+        <div>
+          {% if al is not none %}
+          {% call cartao('Relatório de alta', 'documento', 'roxo', id=pre ~ 'alta') %}
+            <div class="situacao situacao-cartao">
+              {% if al.estado == 'finalizado' %}
+                <span class="selo ativo">Finalizado</span>
+                <span>{{ al.em.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ al.por if pode_ler_social and al.por }}</span>
+              {% elif al.estado == 'rascunho' %}
+                <span class="selo lista_espera">Em andamento</span>
+                <span>salvo em {{ al.em.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ al.por if pode_ler_social and al.por }}</span>
+              {% else %}
+                <span class="selo{{ ' lista_espera' if o.baixa_em }}">Não escrito</span>
+              {% endif %}
+            </div>
+            {% if pode_servico_social or al.historico %}
+            <div class="acoes-cartao">
+              {% if pode_servico_social %}
+                <a class="botao {{ 'secundario' if al.estado == 'finalizado' else 'suave' }} pequeno" href="{{ url_for('relatorio_de_alta', id=o.id) }}">{{ 'Alterar' if al.estado == 'finalizado' else 'Continuar' if al.estado == 'rascunho' else 'Escrever' }}</a>
+              {% endif %}
+              {% if al.historico %}<a class="botao secundario pequeno" href="{{ url_for('historico_do_relatorio', id=o.id, tipo='alta') }}">Histórico de versões</a>{% endif %}
+            </div>
+            {% endif %}
+          {% endcall %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# ---------------- Saúde: a ficha (só de quem já foi internado), os registros de enfermagem e a evolução #}
+    {% if sa is not none %}
+    <div class="painel-aba" data-painel="saude" hidden>
+      <div class="grade-dupla">
+        <div>
+          {% call cartao('Ficha de saúde', 'prancheta', 'turquesa', id=pre ~ 'saude') %}
+            <div class="situacao situacao-cartao">
+              {% if sa.estado == 'finalizado' %}
+                <span class="selo ativo">Finalizada</span>
+                <span>{{ sa.em.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ sa.por if pode_ler_saude and sa.por }}</span>
+              {% elif sa.estado == 'rascunho' %}
+                <span class="selo lista_espera">Em andamento</span>
+                <span>salva em {{ sa.em.strftime('%d/%m/%Y às %H:%M') }}{{ ' · ' ~ sa.por if pode_ler_saude and sa.por }}</span>
+              {% else %}
+                <span class="selo">Não iniciada</span>
+              {% endif %}
+            </div>
+            {% set escreve_saude = pode_escrever_saude and sa.estado != 'finalizado' %}
+            {% set altera_saude = sa.estado == 'finalizado' and pode_assinar_saude %}
+            {% if escreve_saude or altera_saude or sa.historico %}
+            <div class="acoes-cartao">
+              {% if escreve_saude %}
+                <a class="botao suave pequeno" href="{{ url_for('ficha_saude', id=o.id) }}">{{ 'Continuar' if sa.estado == 'rascunho' else 'Preencher' }}</a>
+              {% elif altera_saude %}
+                <a class="botao secundario pequeno" href="{{ url_for('ficha_saude', id=o.id) }}">Alterar</a>
+              {% endif %}
+              {% if sa.historico %}<a class="botao secundario pequeno" href="{{ url_for('historico_do_relatorio', id=o.id, tipo='saude') }}">Histórico de versões</a>{% endif %}
+            </div>
+            {% endif %}
+          {% endcall %}
+        </div>
+        <div>
+          {% if pode_ler_saude or pode_evoluir %}
+          {% call cartao('Acompanhamento da saúde', 'documento', 'turquesa') %}
+            {% if pode_ler_saude %}
+            <div class="area-linha">
+              <div class="area-info"><div><strong>Registros de enfermagem</strong><div class="situacao"><span>{{ sa.registros }} registro{{ '' if sa.registros == 1 else 's' }}</span></div></div></div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="{{ url_for('saude_enfermagem', id=o.id) }}">Abrir</a></div>
+            </div>
+            {% endif %}
+            <div class="area-linha">
+              <div class="area-info"><div><strong>Evolução multiprofissional</strong><div class="situacao"><span>{{ sa.evolucoes }} evoluç{{ 'ão' if sa.evolucoes == 1 else 'ões' }}</span></div></div></div>
+              <div class="area-acoes"><a class="botao pequeno secundario" href="{{ url_for('saude_evolucao', id=o.id) }}">Abrir</a></div>
+            </div>
+          {% endcall %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {# ---------------- Financeiro: a contribuição e as parcelas #}
+    <div class="painel-aba" data-painel="financeiro" hidden>
+      <div class="ficha-grade">
+        <div class="coluna-principal">
+          {% call cartao('Parcelas', 'moeda', 'amarelo', id=pre ~ 'parcelas') %}
+            {% if o.parcelas %}
+              <div class="tabela-rolavel">
+              <table class="simples">
+                <thead><tr><th>Nº</th><th>Data</th><th>Valor</th><th></th></tr></thead>
+                <tbody>
+                  {% for parc in o.parcelas %}
+                  <tr>
+                    <td>{{ parc.numero }}ª</td>
+                    <td>{{ parc.data | data }}</td>
+                    <td class="num">{{ parc.valor | reais if parc.valor is not none else '—' }}</td>
+                    <td>{% if pode('financeiro') %}<form method="post" action="{{ url_for('excluir_parcela', id=parc.id) }}"
+                              data-confirmar="Excluir a {{ parc.numero }}ª parcela?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                          <button class="botao pequeno secundario">Excluir</button></form>{% endif %}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              </div>
+            {% else %}
+              <p class="nao-informado">Nenhuma parcela lançada.</p>
+            {% endif %}
+            {% if pode('financeiro') %}
+            <details class="nova-parcela-caixa">
+              <summary class="botao suave pequeno" style="margin-top: 12px;">Lançar parcela</summary>
+              <form class="nova-parcela" method="post" action="{{ url_for('lancar_parcela', id=o.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label>Nº<input type="number" name="numero" min="1"
+                       value="{{ (o.parcelas | map(attribute='numero') | max) + 1 if o.parcelas else 1 }}"></label>
+                <label>Data *<input type="date" name="data" required></label>
+                <label>Valor (R$)<input type="number" step="0.01" min="0" name="valor"
+                       value="{{ '%.2f' % o.contribuicao_valor if o.contribuicao_valor else '' }}"></label>
+                <button class="botao suave">Lançar</button>
+              </form>
+            </details>
+            {% endif %}
+          {% endcall %}
+        </div>
+        <aside class="coluna-lateral">
+          {% call cartao('Contribuição', 'moeda', 'verde') %}
+            {{ dados([('Categoria', o.categoria), ('Convênio', o.convenio_tela),
+                      ('Contribuição', (o.contribuicao_valor | reais) ~ (' — ' ~ o.contribuicao_condicoes if o.contribuicao_condicoes else ''))]) }}
+          {% endcall %}
+        </aside>
+      </div>
+    </div>
+
+    {# ---------------- Imprimir: a caixa que escolhe os documentos, ao lado do preview das folhas (a página de impressão, dentro da ficha) #}
+    {% if r.documentos %}
+    {% set com_preview = r.documentos | selectattr('impresso') | list %}
+    {% set marcados = r.documentos | selectattr('marcado') | map(attribute='chave') | list %}
+    <div class="painel-aba" data-painel="imprimir" hidden>
+      <div class="impressao-lado" id="{{ pre }}impressos" data-impressos data-ver="{{ url_for('ver_impressos', id=o.id) }}" data-docx="{{ url_for('baixar_impressos', id=o.id) }}">
+        <div class="coluna-escolha">
+          {% call cartao('Documentos para imprimir', 'impressora', 'azul') %}
+            {% if r.documentos | length > 1 %}<div class="selecao-topo"><button type="button" class="botao secundario pequeno" data-marcar-todos aria-pressed="false">Selecionar tudo</button></div>{% endif %}
+            <ul class="lista-docs">
+              {% for d in r.documentos %}
+              <li>
+                <label class="escolha caixa"><input type="checkbox" data-chave="{{ d.chave }}" aria-label="Mostrar e imprimir: {{ d.rotulo }}"{{ ' checked' if d.marcado }}>
+                  <span class="chip-doc" aria-hidden="true"><svg class="icone"><use href="#i-documento"/></svg></span>
+                  <span><span class="nome-doc">{{ d.rotulo }}</span>{% if d.aviso %}<small class="tipo">{{ d.aviso }}</small>{% endif %}</span></label>
+                <div class="acoes-doc">
+                  <details class="mais"><summary class="botao secundario pequeno" aria-label="Mais ações de {{ d.rotulo }}"><svg class="icone"><use href="#i-pontos"/></svg></summary>
+                    <div class="menu-mais">
+                      <button type="button" data-so-este="{{ d.chave }}"><svg class="icone"><use href="#i-impressora"/></svg>Imprimir só este</button>
+                      <a href="{{ url_for('baixar_impressos', id=o.id, itens=d.chave, emissor=emissor_escolhido if d.chave == 'declaracao' else None) }}" data-docx-item="{{ d.chave }}"><svg class="icone"><use href="#i-baixar"/></svg>Baixar Word</a>
+                    </div></details>
+                </div>
+                {% if d.chave == 'declaracao' and emissores %}
+                {# a declaração leva a assinatura de quem emite: a escolha aparece enquanto ela está marcada #}
+                <label class="linha-emissor" data-mostrar-com="declaracao"{{ ' hidden' if not d.marcado }}>Quem assina
+                  <select data-param="emissor" aria-label="Responsável pela emissão da declaração">
+                    {% for fid, rotulo, sem_registro in emissores %}<option value="{{ fid }}"{{ ' selected' if fid == emissor_escolhido }}{{ ' disabled' if sem_registro and fid != emissor_escolhido }}>{{ rotulo }}</option>{% endfor %}
+                  </select></label>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+            {% if com_preview %}
+            <div class="barra-selecao" data-selecao hidden>
+              <span data-contagem>0 escolhidos</span>
+              <button type="button" class="botao" data-imprimir-escolhidos><svg class="icone"><use href="#i-impressora"/></svg>Imprimir os escolhidos</button>
+              <a class="botao secundario" data-baixar href="#"><svg class="icone"><use href="#i-baixar"/></svg>Baixar Word</a>
+            </div>
+            {% endif %}
+          {% endcall %}
+        </div>
+        {% if com_preview %}
+        <div class="preview-impressao">
+          <iframe class="quadro-impressao" title="Como os documentos escolhidos saem no papel" data-src="{{ url_for('ver_impressos', id=o.id, itens=marcados | join(','), embutido=1) }}"{{ ' hidden' if not marcados }}></iframe>
+          <p class="nao-informado vazio-preview" data-sem-preview{{ ' hidden' if marcados }}>Marque um documento ao lado para ver como ele sai no papel.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# ---------------- Escaneados: o PDF do papel assinado, com a área de cada um #}
+    {% if tem_escaneados %}
+    <div class="painel-aba" data-painel="escaneados" hidden>
+      {% call cartao('Documentos escaneados', 'documento', 'neutro', id=pre ~ 'escaneados') %}
+        <div data-escaneados>
+          {% if pode('anexar') %}<div class="topo-escaneados"><button type="button" class="botao suave pequeno" data-anexar="{{ url_for('enviar_anexo', id=o.id) }}"><svg class="icone"><use href="#i-enviar"/></svg>Anexar PDF</button></div>{% endif %}
+          {% set presentes = r.escaneados | map(attribute='area') | list %}
+          {% if presentes | unique | list | length > 1 %}
+          <div class="filtro-area" role="group" aria-label="Filtrar por área">
+            <button type="button" data-filtro="" aria-pressed="true">Todos</button>
+            {% for chave, rotulo in rotulos_das_areas.items() if chave in presentes %}<button type="button" data-filtro="{{ chave or 'geral' }}" aria-pressed="false">{{ rotulo }}</button>{% endfor %}
+          </div>
+          {% endif %}
+          {% if r.escaneados %}
+          <ul class="lista-docs">
+            {% for a in r.escaneados %}
+            <li data-area="{{ a.area or 'geral' }}"{{ ' class="removido"' | safe if a.excluido_em }}>
+              <div class="sem-caixa"><span class="chip-pdf" aria-hidden="true">PDF</span>
+                <span><span class="nome-doc">{{ a.titulo }}</span>
+                  <small class="tipo">Enviado em {{ a.enviado_em | data }} · {{ a.tamanho | tamanho }}{% if a.enviado_por %} · por {{ a.enviado_por }}{% endif %}</small>
+                  {% if a.excluido_em %}<small class="tipo">Removido em {{ a.excluido_em | data }}{% if a.excluido_por %} por {{ a.excluido_por }}{% endif %} (só o administrador vê)</small>{% endif %}</span></div>
+              <span class="chip-area {{ a.area }}">{{ rotulos_das_areas[a.area] }}</span>
+              <div class="acoes-doc">
+                <a class="botao pequeno secundario" href="{{ url_for('ver_anexo', id=o.id, anexo_id=a.id) }}" target="_blank" rel="noopener">Abrir</a>
+                <details class="mais"><summary class="botao secundario pequeno" aria-label="Mais ações de {{ a.titulo }}"><svg class="icone"><use href="#i-pontos"/></svg></summary>
+                  <div class="menu-mais">
+                    <a href="{{ url_for('baixar_anexo', id=o.id, anexo_id=a.id) }}"><svg class="icone"><use href="#i-baixar"/></svg>Baixar PDF</a>
+                    {% if not a.excluido_em and pode('anexar') and areas_de_anexo | length > 1 %}
+                    <form method="post" action="{{ url_for('mudar_area_do_anexo', id=o.id, anexo_id=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <span class="mini-rotulo">Vincular à área</span>
+                      <div class="vincular-area">
+                        <select name="area" aria-label="Área do documento">{% for chave, rotulo in areas_de_anexo %}<option value="{{ chave }}"{{ ' selected' if chave == a.area }}>{{ rotulo }}</option>{% endfor %}</select>
+                        <button class="botao pequeno secundario">Vincular</button>
+                      </div>
+                    </form>
+                    {% endif %}
+                    {% if not a.excluido_em and pode('anexar') %}
+                    <form method="post" action="{{ url_for('remover_anexo', id=o.id, anexo_id=a.id) }}"
+                          data-confirmar="Remover este documento da ficha? O administrador ainda poderá restaurá-lo."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="item-perigo"><svg class="icone"><use href="#i-lixeira"/></svg>Remover da ficha</button></form>
+                    {% endif %}
+                    {% if a.excluido_em and e_administrador %}
+                    <form method="post" action="{{ url_for('restaurar_anexo', id=o.id, anexo_id=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Restaurar</button></form>
+                    <form method="post" action="{{ url_for('apagar_anexo', id=o.id, anexo_id=a.id) }}"
+                          data-confirmar="Apagar este documento de vez? O arquivo é apagado do disco e não tem volta."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="item-perigo">Apagar de vez</button></form>
+                    {% endif %}
+                  </div></details>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+            <p class="nao-informado vazio-docs">Nenhum documento escaneado anexado.</p>
+          {% endif %}
+        </div>
+      {% endcall %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</main>
+
+{# ---------------------------------------------------------------- janelas #}
+{% if pode('anexar') %}
+<dialog id="anexar" aria-labelledby="titulo-anexar">
+  <form class="novo-anexo" id="form-anexar" method="post" enctype="multipart/form-data" data-limite="{{ limite_do_anexo }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <h2 id="titulo-anexar">Anexar documento escaneado</h2>
+    <label class="campo-arquivo">PDF do documento assinado *
+      <span class="escolher-arquivo" data-escolher-arquivo data-extensao="pdf" data-limite="{{ limite_do_anexo }}">
+        <input type="file" name="arquivo" accept="application/pdf,.pdf" required title="Escolher o PDF">
+        <span class="escolher-icone" aria-hidden="true"><svg class="icone"><use href="#i-enviar"/></svg><span class="pdf">PDF</span></span>
+        <span class="escolher-texto">
+          <strong class="escolher-titulo"><span class="com-mouse">Arraste o PDF para cá</span><span class="sem-mouse">Toque para escolher o PDF</span></strong>
+          <small class="escolher-dica"><span class="com-mouse">ou escolha no computador · </span>só PDF, até {{ limite_do_anexo // 1048576 }}&nbsp;MB</small>
+        </span>
+        <span class="botao secundario pequeno escolher-botao" aria-hidden="true">Escolher arquivo</span>
+      </span>
+    </label>
+    <div class="grade">
+      <label class="c3">Título (como vai aparecer na lista)
+        <input type="text" name="titulo" maxlength="100" list="titulos-de-anexo" placeholder="Prontuário assinado" autocomplete="off"></label>
+      <label class="c3">Área
+        <select name="area">{% for chave, rotulo in areas_de_anexo %}<option value="{{ chave }}">{{ rotulo }}</option>{% endfor %}</select></label>
+    </div>
+    <datalist id="titulos-de-anexo">{% for t in titulos_de_anexo %}<option value="{{ t }}">{% endfor %}</datalist>
+    <small>150 a 200 dpi bastam. Enviar de novo o mesmo arquivo não faz diferença: o sistema avisa.</small>
+    <div class="botoes">
+      <button type="button" class="botao secundario" id="cancelar-anexar">Cancelar</button>
+      <button class="botao suave"><svg class="icone"><use href="#i-enviar"/></svg><span>Anexar</span></button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+{# uma janela de excluir por passagem: a que o botão "Excluir registro" da visão abre #}
+{% if pode('excluir') %}
+{% for r in passagens %}
+<dialog class="excluir" id="excluir-{{ r.o.id }}">
+  <form method="post" action="{{ url_for('excluir_registro', id=r.o.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <h2>Excluir o registro de {{ p.nome }}?</h2>
+    <p><strong>{{ r.rotulo }}{{ ' · ' ~ r.periodo if r.periodo }}</strong></p>
+    <p>
+      {% if r.o.status == 'ativo' %}<strong>Este interno está ativo: a vaga dele será liberada.</strong> {% endif %}
+      {% if e_administrador %}
+        Ele sai das listas, dos relatórios e das buscas. Na lixeira ele fica guardado no banco e pode ser restaurado; excluído de vez, é apagado do banco e não tem volta.
+      {% else %}
+        Ele sai das listas, dos relatórios e das buscas. O administrador ainda pode recuperá-lo.
+      {% endif %}
+    </p>
+    <div class="botoes">
+      <button type="button" class="botao secundario" data-cancelar-exclusao>Cancelar</button>
+      {% if e_administrador %}
+        <button class="botao secundario" name="acao" value="lixeira">Mover para a lixeira</button>
+        <button class="botao perigo solido" name="acao" value="apagar" data-confirmar="Apagar {{ p.nome }} do banco de dados? Não tem volta.">Excluir de vez</button>
+      {% else %}
+        <button class="botao perigo solido" name="acao" value="lixeira">Excluir</button>
+      {% endif %}
+    </div>
+  </form>
+</dialog>
+{% endfor %}
+{% endif %}
+<script src="{{ url_for('static', filename='impressao.js') }}"></script>      {# a caixa "para imprimir" e o preview (static/impressao.js, o mesmo da página de Relatórios) #}
+<script nonce="{{ csp_nonce() }}">
+  (function () {
+    // (o que a pessoa não pode usar nem existe na página: cada peça abaixo só liga se estiver lá)
+    var todos = function (seletor, raiz) { return [].slice.call((raiz || document).querySelectorAll(seletor)); };
+
+    // ---- as visões (uma por passagem) e as abas: os painéis estão todos na página; aqui se mostra um por vez
+    var visoes = todos(".visao");
+    var passagem = String((visoes.filter(function (v) { return !v.hidden; })[0] || visoes[0]).getAttribute("data-passagem"));
+    var aba = "resumo";
+    var chave = "aba-do-prontuario-{{ p.id }}";                              // a aba aberta fica lembrada (só nesta pessoa e só nesta sessão): salvar um relatório volta à mesma aba
+    var guardada = function () { try { return sessionStorage.getItem(chave); } catch (e) { return null; } };
+    var guardar = function (nome) { try { sessionStorage.setItem(chave, nome); } catch (e) { /* sem armazenamento: só não lembra a aba */ } };
+    var visaoDe = function (id) { return visoes.filter(function (v) { return v.getAttribute("data-passagem") === String(id); })[0]; };
+
+    // a página de impressão (com o preview) dentro da aba Imprimir: só carrega quando a aba aparece (as folhas se medem na tela)
+    var imprimirAoAbrir = {{ 'true' if imprimir_ao_abrir else 'false' }};                // vindo de um atalho de imprimir (?imprimir=1): o preview já carrega mandando imprimir, uma vez só
+    var carregarImpressao = function (visao) {
+      var quadro = visao.querySelector("iframe[data-src]");
+      if (quadro && !imprimirAoAbrir && !quadro.getAttribute("src")) quadro.setAttribute("src", quadro.getAttribute("data-src"));
+    };
+
+    var daHash = function () {            // #aba-social, ou a âncora de um cartão (#acolhimento, #p12-parcelas...): a aba e a passagem onde ele está
+      var alvo = decodeURIComponent(location.hash.slice(1));
+      if (!alvo) return {};
+      if (alvo.indexOf("aba-") === 0) return { aba: alvo.slice(4) };
+      var el = document.getElementById(alvo), painel = el && el.closest(".painel-aba"), visao = el && el.closest(".visao");
+      return painel ? { aba: painel.getAttribute("data-painel"), passagem: visao && visao.getAttribute("data-passagem"), el: el } : {};
+    };
+    var mostrar = function (id, nome) {
+      var visao = visaoDe(id) || visaoDe(passagem);
+      if (!visao.querySelector('.painel-aba[data-painel="' + nome + '"]')) nome = "resumo";          // a aba que esta passagem não tem (saúde na triagem, por exemplo)
+      visoes.forEach(function (v) { v.hidden = v !== visao; });
+      todos(".painel-aba", visao).forEach(function (p) { p.hidden = p.getAttribute("data-painel") !== nome; });
+      todos("a.aba", visao).forEach(function (a) { if (a.getAttribute("data-aba") === nome) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); });
+      var ativa = visao.querySelector('a.aba[aria-current]');            // no celular as abas rolam de lado: a aberta fica à vista
+      if (ativa) ativa.parentNode.scrollLeft = Math.max(0, ativa.offsetLeft - 16);
+      passagem = visao.getAttribute("data-passagem");
+      aba = nome;
+      guardar(nome);
+      if (nome === "imprimir") carregarImpressao(visao);
+      return visao;
+    };
+    var aoTopo = function (visao) {       // quem rolou a página volta ao começo do painel, logo abaixo das abas
+      var barra = visao.querySelector(".abas-prontuario");
+      var topoH = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--topo-h"), 10) || 60;
+      var y = barra.getBoundingClientRect().top + window.pageYOffset - topoH;
+      if (window.pageYOffset > y) window.scrollTo(0, y);
+    };
+    var abrir = function () {
+      var h = daHash();
+      var visao = mostrar(h.passagem || passagem, h.aba || guardada() || "resumo");
+      if (h.el) h.el.scrollIntoView(); else if (h.aba) aoTopo(visao);
+    };
+    window.addEventListener("hashchange", abrir);
+    window.addEventListener("popstate", abrir);
+    abrir();
+    // escolher outra passagem na faixa: troca a visão (a aba aberta continua) e o endereço passa a ser o dela (F5 reabre nela), sem acrescentar histórico
+    todos("[data-ir-passagem]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        mostrar(b.getAttribute("data-ir-passagem"), aba);
+        history.replaceState(null, "", b.getAttribute("data-endereco") + "#aba-" + aba);
+        window.scrollTo(0, 0);
+      });
+    });
+    // o nome da pessoa fica à vista nas abas quando o cabeçalho sai da tela
+    if ("IntersectionObserver" in window) visoes.forEach(function (v) {
+      var barra = v.querySelector(".abas-prontuario");
+      new IntersectionObserver(function (e) { barra.classList.toggle("rolou", !e[0].isIntersecting); }).observe(v.querySelector(".ficha-topo"));
+    });
+
+    {% if imprimir_ao_abrir %}
+    imprimirAoAbrir = false;
+    history.replaceState(null, "", location.pathname + location.hash);
+    var areaAberta = document.querySelector(".visao:not([hidden]) [data-impressos]");
+    if (areaAberta && areaAberta.imprimirEscolhidos) areaAberta.imprimirEscolhidos();
+    {% endif %}
+
+    // ---- documentos escaneados: o filtro por área
+    todos("[data-escaneados]").forEach(function (area) {
+      var botoes = todos("[data-filtro]", area), linhas = todos("li[data-area]", area);
+      botoes.forEach(function (b) {
+        b.addEventListener("click", function () {
+          var filtro = b.getAttribute("data-filtro");
+          botoes.forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
+          linhas.forEach(function (l) { l.hidden = !!filtro && l.getAttribute("data-area") !== filtro; });
+        });
+      });
+    });
+
+    // ---- anexar um PDF: uma janela só; o botão de cada passagem diz para onde vai
+    var janela = document.getElementById("anexar");
+    if (janela) {
+      var formulario = document.getElementById("form-anexar");
+      todos("[data-anexar]").forEach(function (b) {
+        b.addEventListener("click", function () { formulario.reset(); formulario.setAttribute("action", b.getAttribute("data-anexar")); janela.showModal(); });
+      });
+      document.getElementById("cancelar-anexar").addEventListener("click", function () { janela.close(); });
+      // (a conferência do PDF antes de enviar, só PDF e dentro do limite, é do static/base.js: data-escolher-arquivo; o servidor confere de novo)
+      var enviar = formulario.querySelector("button:not([type])");
+      formulario.addEventListener("submit", function () { enviar.disabled = true; enviar.querySelector("span").textContent = "Enviando…"; });     // um clique só: o PDF pode demorar a subir
+    }
+
+    // ---- "Salvar e baixar prontuário": a ficha abre e o download do conjunto da internação começa; o ?baixar=1 sai do endereço (F5 não baixa de novo)
+    {% if baixar and pode('documentos') %}
+    history.replaceState(null, "", location.pathname + location.hash);
+    window.location.href = {{ url_for('baixar_impressos', id=i.id) | tojson }};
+    {% endif %}
+
+    // ---- excluir o registro (a janela da passagem que o botão da visão aponta)
+    todos("[data-excluir]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var dialogo = document.getElementById("excluir-" + b.getAttribute("data-excluir")), menu = b.closest("details");
+        if (menu) menu.open = false;
+        if (dialogo) dialogo.showModal();
+      });
+    });
+    todos("[data-cancelar-exclusao]").forEach(function (b) { b.addEventListener("click", function () { b.closest("dialog").close(); }); });
+    // (os menus "Mais" fecham ao clicar fora e com Esc: static/base.js)
+  })();
+</script>
+{% endblock %}

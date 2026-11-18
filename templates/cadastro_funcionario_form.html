@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% import "_campos.html" as f with context %}
+{% from "_voltar.html" import linha_voltar with context %}
+{% from "_cartao.html" import legenda %}
+
+{% block titulo %}{{ 'Editar funcionário' if funcionario else 'Novo funcionário' }}{% endblock %}
+
+{% block estilo %}
+  .caixas { display: grid; gap: 12px; }
+  .grade + .caixas { margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--borda); }      /* as opções ficam à parte dos campos, sem encostar neles */
+{% endblock %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('lista_funcionarios')) }}
+  <h1>{{ 'Editar funcionário' if funcionario else 'Novo funcionário' }}</h1>
+
+  <div class="form-grade">
+  <form data-indice method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if erros %}<div class="caixa-erros"><strong>Confira os campos marcados em vermelho.</strong></div>{% endif %}
+    <fieldset class="tom-azul">
+      {{ legenda('Funcionário', 'usuario') }}
+      <div class="grade">
+        {{ f.entrada('nome', 'Nome', 'c4', obrig=true, attrs={'maxlength': 200, 'autofocus': true, 'data-forma': 'nome'}) }}
+        {{ f.entrada('cargo', 'Cargo', 'c2', obrig=true, attrs={'maxlength': 100, 'data-forma': 'local'}) }}
+      </div>
+    </fieldset>
+
+    <fieldset class="tom-roxo">
+      {{ legenda('Acesso ao sistema', 'cadeado') }}
+      {% if pode_acessos %}
+      <div class="grade">
+        {# a linha de cima sempre fecha em 6 colunas: com login já criado não há "Criar um usuário novo", e os dois campos dividem a linha #}
+        {{ f.escolha('nivel_id', 'Nível de acesso', niveis, 'c3' if login_atual else 'c2', obrig=true, vazio=none) }}
+        {{ f.escolha('usuario', 'Usuário de login', usuarios, 'c3' if login_atual else 'c2', vazio='Sem acesso') }}
+        {% if not login_atual %}
+          {{ f.entrada('novo_usuario', 'Criar um usuário novo', 'c2', attrs={'maxlength': 50, 'autocapitalize': 'none', 'spellcheck': 'false', 'autocomplete': 'off'}) }}
+        {% endif %}
+        {{ f.entrada('senha', 'Nova senha' if login_atual else 'Senha', 'c3', 'password', attrs={'autocomplete': 'new-password', 'placeholder': 'em branco: mantém a atual' if login_atual else ''}) }}
+        {{ f.entrada('confirmacao', 'Repita a senha', 'c3', 'password', attrs={'autocomplete': 'new-password'}) }}
+        {{ f.entrada('email', 'E-mail', 'c4', 'email', attrs={'maxlength': 200, 'autocapitalize': 'none', 'spellcheck': 'false', 'placeholder': identidade.email.exemplo_pessoa}) }}
+        {% if funcionario %}
+        <label class="c2">Situação do e-mail
+          <input readonly value="{{ 'Sem e-mail' if not funcionario.email else ('Confirmado' if funcionario.email_confirmado_em else 'Não confirmado') }}"></label>
+        {% endif %}
+      </div>
+      {% if totp_ativo %}
+      <div class="caixas">
+        <label class="caixa"><input type="checkbox" name="desativar_totp" value="1">Desativar o aplicativo autenticador desta pessoa (celular perdido)</label>
+      </div>
+      {% endif %}
+      {% else %}
+      <div class="grade">
+        <label class="c3">Nível de acesso<input value="{{ nivel_atual }}" readonly></label>
+        <label class="c3">Usuário de login<input value="{{ login_atual }}" readonly></label>
+      </div>
+      {% endif %}
+    </fieldset>
+
+    <fieldset class="tom-rosa">
+      {{ legenda('Equipe e relatórios sigilosos', 'coracao') }}
+      <div class="grade">
+        {% if pode_acessos %}
+          {{ f.escolha('polo', 'Polo de trabalho', polos, 'c2', vazio='Não definido') }}
+          {{ f.escolha('profissao', 'Função na equipe', profissoes, 'c2', vazio='Nenhuma') }}
+        {% else %}
+        <label class="c2">Polo de trabalho<input value="{{ polo_atual }}" readonly></label>
+        <label class="c2">Função na equipe<input value="{{ funcao_atual }}" readonly></label>
+        {% endif %}
+        {{ f.entrada('registro_profissional', 'Registro profissional', 'c2', attrs={'maxlength': 30, 'placeholder': 'o do conselho da função (CRESS, COREN...)'}) }}
+      </div>
+      <div class="caixas">
+        {% if pode_acessos %}
+        <label class="caixa"><input type="checkbox" name="le_sigilosos" value="1"{{ ' checked' if d.get('le_sigilosos') == '1' }}>Lê os relatórios sigilosos (acolhimento social e ficha de saúde), sem editar</label>
+        {% else %}
+        <label class="caixa"><input type="checkbox" disabled{{ ' checked' if d.get('le_sigilosos') == '1' }}>Lê os relatórios sigilosos (só o administrador muda)</label>
+        {% endif %}
+      </div>
+    </fieldset>
+
+    <fieldset class="tom-turquesa">
+      {{ legenda('Assinatura dos documentos', 'documento') }}
+      <div class="caixas">
+        <label class="caixa"><input type="checkbox" name="ativo" value="1"{{ ' checked' if d.get('ativo') == '1' }}>Ativo</label>
+        <label class="caixa{{ ' com-erro' if erros.get('padrao') }}"><input type="checkbox" name="padrao" value="1"{{ ' checked' if d.get('padrao') == '1' }}>Assina por padrão, quando ninguém escolhe outra pessoa</label>
+        {% if erros.get('padrao') %}<small class="erro">{{ erros['padrao'] }}</small>{% endif %}
+      </div>
+    </fieldset>
+
+    <div class="barra-salvar">
+      <button class="botao" type="submit">{{ 'Salvar alterações' if funcionario else 'Cadastrar funcionário' }}</button>
+      <span class="estado-form" hidden>Alterações não salvas</span>
+    </div>
+  </form>
+  </div>
+</main>
+<script src="{{ url_for('static', filename='secoes.js') }}"></script>
+<script nonce="{{ csp_nonce() }}">
+  // o exemplo do registro muda com a função escolhida (cada conselho escreve o número de um jeito)
+  (function () {
+    var funcao = document.getElementById("f-profissao"), registro = document.getElementById("f-registro_profissional");
+    if (!funcao || !registro) return;
+    var exemplos = {{ exemplos_de_registro | tojson }};
+    function atualizar() { registro.placeholder = exemplos[funcao.value] || "o do conselho da função (CRESS, COREN...)"; }
+    funcao.addEventListener("change", atualizar);
+    atualizar();
+  })();
+</script>
+{% endblock %}

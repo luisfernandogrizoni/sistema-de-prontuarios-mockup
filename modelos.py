@@ -1,0 +1,823 @@
+"""
+Banco de dados (SQLite via Flask-SQLAlchemy).
+
+Tabelas dos acolhidos:
+
+    pessoas      quem é o acolhido (dados que não mudam de uma internação para outra)
+       │ 1
+       │ N
+    internacoes  cada passagem pela casa: começa como triagem (em admissão, lista de
+       │ 1       espera, desistência) e, ao ser admitida, vira internação (ativo/inativo).
+       │ N       Responsável, convênio e datas ficam aqui — mudam a cada internação.
+    parcelas     contribuições pagas naquela internação (nº, data, valor)
+    relatorios_sociais  o acolhimento social daquela internação: ficha, relatório e parecer (1 por internação)
+    fichas_saude        a ficha de saúde (anamnese) daquela internação, assinada pela enfermagem (1 por internação)
+    registros_enfermagem  sinais vitais, glicemia, perdas e evolução de enfermagem, um registro por vez (só se acrescenta)
+    evolucoes_saude     evolução multiprofissional e anotações da coordenação e de outros profissionais (só se acrescenta)
+    versoes_relatorios  o histórico de versões do acolhimento social, da ficha de saúde e do relatório de alta depois de finalizados (só o administrador vê)
+    relatorios_alta     o relatório de alta da assistente social daquela internação: um texto livre, com assinatura (1 por internação)
+    notificacoes        os avisos para cada pessoa ("aconteceu isto numa ficha"): o sino do cabeçalho e o aviso da enfermeira (notificacoes.py)
+    contatos_fila       as tentativas de contato com quem está na lista de espera: quando, quem, o resultado e a data para ligar de novo (fila.py)
+
+Os nomes das colunas são os mesmos dos campos dos formulários (name="..."):
+    preencher(form)      formulário -> colunas (só os campos que vieram no form)
+    como_formulario()    colunas -> dicionário no formato do formulário
+"""
+
+from datetime import date, datetime, time
+
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, String, Time, UniqueConstraint, event
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from prontuario import (calcular_idade, categoria_efetiva, classificar, fmt_data, fmt_reais, ler_data,
+                        ler_valor, previsao_termino, tipo_da_categoria)
+from servico_social import estado
+from validacao import escrever_bem, fmt_cpf, fmt_hora, fmt_telefone, ler_hora, limpar_rg, so_digitos
+
+db = SQLAlchemy()
+
+# Legenda da aba Triagens: 1 ativo, 2 inativo, 3 em admissão, 4 lista de espera, 5 desistiu
+# (rejeitado = a triagem concluiu que o tratamento da casa não é o que a pessoa precisa; o porquê é o parecer da assistente social)
+STATUS = {
+    "em_admissao": "Em processo de admissão",
+    "lista_espera": "Lista de espera",
+    "desistiu": "Desistência",
+    "rejeitado": "Rejeitado na triagem",
+    "ativo": "Ativo",
+    "inativo": "Inativo",
+}
+STATUS_TRIAGEM = ("em_admissao", "lista_espera", "desistiu", "rejeitado")
+STATUS_INTERNACAO = ("ativo", "inativo")
+MODALIDADES = ["Presencial", "Online"]
+
+
+def status_texto(status, motivo=""):
+    """"Ativo", "Inativo (Desistência)"...: a situação como aparece nas telas (o motivo só vale para quem está inativo)."""
+    txt = STATUS.get(status, status)
+    return f"{txt} ({motivo})" if status == "inativo" and motivo else txt
+
+# Onde está o prontuário em papel (o envelope com os termos de compromisso) de quem recebeu baixa.
+# Ele vai para a casa de acolhida com o interno e precisa voltar ao escritório para o relatório de saída.
+# "" = sem controle (baixas anteriores a este recurso, que não geram aviso).
+ENVELOPE_PENDENTE = "pendente"     # ainda na casa de acolhida
+ENVELOPE_RECEBIDO = "recebido"     # de volta ao escritório
+
+
+class CamposDeFormulario:
+    """Comportamento comum: copiar formulário <-> colunas, convertendo pelo tipo."""
+
+    CAMPOS_DO_SISTEMA = {"id", "pessoa_id", "internacao_id", "status", "criado_em", "atualizado_em",
+                         "envelope", "envelope_recebido_em", "excluido_em", "excluido_por", "exames_impressos_para", "baixa_em", "origem", "conferido_em", "conferido_por",
+                         "fila_desde", "fila_ordem", "fila_retornar_em"}
+    # como cada campo de texto é escrito (validacao.FORMAS): FULANO DE TAL -> Fulano de Tal. O que não está aqui fica como foi digitado.
+    FORMAS = {}
+
+    def preencher(self, form):
+        for coluna in self.__table__.columns:
+            # só mexe no que veio no formulário: o form de triagem não apaga
+            # campos que só existem no prontuário, e vice-versa
+            if coluna.name in self.CAMPOS_DO_SISTEMA or coluna.name not in form:
+                continue
+            bruto = escrever_bem(self.FORMAS.get(coluna.name), form.get(coluna.name))
+            if isinstance(coluna.type, Date):
+                valor = ler_data(bruto)
+            elif isinstance(coluna.type, Time):
+                valor = ler_hora(bruto)
+            elif isinstance(coluna.type, Float):
+                valor = ler_valor(bruto)
+            else:
+                # o Postgres recusa texto maior que a coluna (o SQLite aceitava): corta no limite
+                valor = bruto[:coluna.type.length] if coluna.type.length else bruto
+            setattr(self, coluna.name, valor)
+        self.normalizar()
+
+    def normalizar(self):
+        pass
+
+    def como_formulario(self):
+        dados = {}
+        for coluna in self.__table__.columns:
+            if coluna.name in self.CAMPOS_DO_SISTEMA:
+                continue
+            valor = getattr(self, coluna.name)
+            if valor is None:
+                dados[coluna.name] = ""
+            elif isinstance(coluna.type, Time):
+                dados[coluna.name] = fmt_hora(valor)
+            elif isinstance(valor, date):
+                dados[coluna.name] = valor.isoformat()
+            elif isinstance(valor, float):
+                dados[coluna.name] = f"{valor:.2f}"
+            else:
+                dados[coluna.name] = str(valor)
+        return dados
+
+
+# =========================================================================
+class Pessoa(CamposDeFormulario, db.Model):
+    __tablename__ = "pessoas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nome: Mapped[str] = mapped_column(String(200))
+    nascimento: Mapped[date | None] = mapped_column(Date)
+    cpf: Mapped[str] = mapped_column(String(20), default="", index=True)
+    rg: Mapped[str] = mapped_column(String(20), default="")
+    cartao_sus: Mapped[str] = mapped_column(String(30), default="")
+    estado_civil: Mapped[str] = mapped_column(String(20), default="")
+    estado_civil_outro: Mapped[str] = mapped_column(String(50), default="")
+    conjuge: Mapped[str] = mapped_column(String(200), default="")
+    escolaridade: Mapped[str] = mapped_column(String(100), default="")
+    religiao: Mapped[str] = mapped_column(String(100), default="")
+    profissao: Mapped[str] = mapped_column(String(100), default="")
+    mae: Mapped[str] = mapped_column(String(200), default="")
+    # endereço
+    cep: Mapped[str] = mapped_column(String(10), default="")
+    endereco: Mapped[str] = mapped_column(String(200), default="")
+    numero: Mapped[str] = mapped_column(String(20), default="")
+    bairro: Mapped[str] = mapped_column(String(100), default="")
+    cidade: Mapped[str] = mapped_column(String(100), default="")
+    estado: Mapped[str] = mapped_column(String(2), default="")
+    # contatos: 1 = família/responsável, 2 = outro, 3 = do próprio acolhido
+    contato1: Mapped[str] = mapped_column(String(100), default="")
+    contato2: Mapped[str] = mapped_column(String(100), default="")
+    contato3: Mapped[str] = mapped_column(String(100), default="")
+
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now,
+                                                    onupdate=datetime.now)
+    # excluída (exclusao.py): some das telas e das buscas, mas continua no banco até o administrador apagar de vez
+    excluido_em: Mapped[datetime | None] = mapped_column(DateTime)
+
+    internacoes: Mapped[list["Internacao"]] = relationship(
+        back_populates="pessoa", order_by="Internacao.id")
+
+    FORMAS = {"nome": "nome", "conjuge": "nome", "mae": "nome", "endereco": "local", "bairro": "local", "cidade": "local", "estado": "uf",
+              "profissao": "frase", "religiao": "frase", "escolaridade": "frase", "estado_civil_outro": "frase"}
+
+    def normalizar(self):
+        self.cpf = so_digitos(self.cpf)
+        self.rg = limpar_rg(self.rg)
+        self.cep = so_digitos(self.cep)
+        self.estado = (self.estado or "").upper()[:2]
+        for campo in ("contato1", "contato2", "contato3"):
+            setattr(self, campo, fmt_telefone(getattr(self, campo)))
+
+    @property
+    def passagens(self):
+        """As internações de verdade da pessoa (ativo ou inativo; triagem, lista de espera, desistência antes de entrar e rejeitado não são passagem), da
+        mais antiga para a mais nova: pela data de início (ou, na falta dela, a de saída). Quem não tem data nenhuma (registro importado de uma pasta
+        antiga) conta como a mais antiga; entre iguais vale a ordem de cadastro. Daqui saem o "passagem 2 de 3" do prontuário e a capa do envelope."""
+        return sorted((i for i in self.internacoes if i.status in STATUS_INTERNACAO), key=lambda i: (i.inicio or i.termino or date.min, i.id))
+
+    @property
+    def registros(self):
+        """TODOS os registros da pessoa (as passagens e as triagens), do mais antigo para o mais novo: é a linha do tempo do prontuário."""
+        return sorted(self.internacoes, key=lambda i: (i.inicio or i.termino or i.internacao_agendada or i.primeiro_contato or date.min, i.id))
+
+    @property
+    def ultima_internacao(self):
+        """A mais recente pela data (internação, ou 1º contato se for só triagem)."""
+        if not self.internacoes:
+            return None
+        return max(self.internacoes,
+                   key=lambda i: (i.inicio or i.internacao_agendada or i.primeiro_contato or date.min, i.id))
+
+    def resumo(self):
+        """Usado na busca de 'paciente existente'."""
+        ultima = self.ultima_internacao
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "cpf": fmt_cpf(self.cpf),
+            "nascimento": fmt_data(self.nascimento),
+            "cidade": "/".join(p for p in (self.cidade, self.estado) if p),
+            "ultima": (f"{STATUS[ultima.status]}"
+                       + (f" desde {fmt_data(ultima.inicio)}" if ultima.inicio else ""))
+                      if ultima else "",
+        }
+
+
+# =========================================================================
+class Internacao(CamposDeFormulario, db.Model):
+    __tablename__ = "internacoes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pessoa_id: Mapped[int] = mapped_column(ForeignKey("pessoas.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="em_admissao", index=True)
+
+    # --- triagem
+    primeiro_contato: Mapped[date | None] = mapped_column(Date)
+    hora_primeiro_contato: Mapped[time | None] = mapped_column(Time)
+    data_triagem: Mapped[date | None] = mapped_column(Date)
+    hora_triagem: Mapped[time | None] = mapped_column(Time)
+    modalidade: Mapped[str] = mapped_column(String(20), default="")
+    # dia marcado para internar (pode não acontecer: desistência)
+    internacao_agendada: Mapped[date | None] = mapped_column(Date)
+    hora_agendada: Mapped[time | None] = mapped_column(Time)
+
+    # --- internação (efetiva: o dia em que ele de fato entrou na casa)
+    inicio: Mapped[date | None] = mapped_column(Date)
+    hora_internacao: Mapped[time | None] = mapped_column(Time)
+    tratamento_ate: Mapped[date | None] = mapped_column(Date)
+    data_documento: Mapped[date | None] = mapped_column(Date)
+    termino: Mapped[date | None] = mapped_column(Date)
+    motivo: Mapped[str] = mapped_column(String(20), default="")
+    # --- envelope do prontuário depois da baixa (ENVELOPE_PENDENTE / ENVELOPE_RECEBIDO, ou "")
+    envelope: Mapped[str] = mapped_column(String(10), default="")
+    envelope_recebido_em: Mapped[date | None] = mapped_column(Date)
+    # --- quando a baixa foi dada no sistema: é daqui que se cobra o relatório de alta da assistente social. Vazio nas baixas de antes deste
+    # recurso (e nas internações que já entraram inativas): elas não geram a cobrança.
+    baixa_em: Mapped[datetime | None] = mapped_column(DateTime)
+    # --- de onde veio o registro quando não foi digitado no sistema (importar_historico.py): "<origem> | lote AAAAMMDD-HHMMSS". Vazio = digitado aqui.
+    # Um registro importado de pasta antiga pode estar sem datas (só se sabe o ano da pasta): o quadro de avisos não cobra a data e ele se edita sem ela.
+    origem: Mapped[str] = mapped_column(String(160), default="")
+    # --- a conferência do registro importado com o prontuário físico (conferencia.py, tela "Para conferir"): quando e por quem. Vazio = ainda a conferir.
+    conferido_em: Mapped[datetime | None] = mapped_column(DateTime)
+    conferido_por: Mapped[str] = mapped_column(String(50), default="")
+
+    # --- responsável (pode mudar de uma internação para outra)
+    resp_nome: Mapped[str] = mapped_column(String(200), default="")
+    parentesco: Mapped[str] = mapped_column(String(50), default="")
+    resp_rg: Mapped[str] = mapped_column(String(20), default="")
+    resp_cpf: Mapped[str] = mapped_column(String(20), default="")
+
+    # --- contribuição
+    convenio: Mapped[str] = mapped_column(String(50), default="")
+    contribuicao_valor: Mapped[float] = mapped_column(Float, default=0.0)
+    contribuicao_condicoes: Mapped[str] = mapped_column(String(200), default="")
+
+    # --- documentos entregues
+    doc_rg: Mapped[str] = mapped_column(String(20), default="")
+    doc_cnh: Mapped[str] = mapped_column(String(20), default="")
+    doc_cin: Mapped[str] = mapped_column(String(20), default="")
+    doc_sus: Mapped[str] = mapped_column(String(20), default="")
+    doc_ctps: Mapped[str] = mapped_column(String(20), default="")
+    doc_outro: Mapped[str] = mapped_column(String(100), default="")
+
+    # --- pedido de exames e enxoval: a data de internação para a qual já foram impressos (None = ainda não)
+    exames_impressos_para: Mapped[date | None] = mapped_column(Date)
+
+    # --- lista de espera (fila.py): quando entrou na fila (carimbado sozinho ao virar "lista de espera"; é a ordem de chegada), a posição manual quando a equipe
+    # sobe ou desce alguém (um número que se compara com o carimbo; vazio = vale a ordem de chegada) e o dia combinado para ligar de novo
+    fila_desde: Mapped[datetime | None] = mapped_column(DateTime)
+    fila_ordem: Mapped[float | None] = mapped_column(Float)
+    fila_retornar_em: Mapped[date | None] = mapped_column(Date)
+
+    # --- exclusão em duas etapas (exclusao.py): quem não é administrador só "exclui" (some das telas, fica no banco);
+    # o administrador vê o que foi excluído e apaga de vez
+    excluido_em: Mapped[datetime | None] = mapped_column(DateTime)
+    excluido_por: Mapped[str] = mapped_column(String(50), default="")
+
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now,
+                                                    onupdate=datetime.now)
+
+    pessoa: Mapped[Pessoa] = relationship(back_populates="internacoes")
+    parcelas: Mapped[list["Parcela"]] = relationship(
+        back_populates="internacao", order_by="Parcela.numero", cascade="all, delete-orphan")
+    relatorio_social: Mapped["RelatorioSocial | None"] = relationship(
+        back_populates="internacao", uselist=False, cascade="all, delete-orphan")
+    ficha_saude: Mapped["FichaSaude | None"] = relationship(
+        back_populates="internacao", uselist=False, cascade="all, delete-orphan")
+    registros_enfermagem: Mapped[list["RegistroEnfermagem"]] = relationship(
+        back_populates="internacao", order_by="RegistroEnfermagem.quando, RegistroEnfermagem.id", cascade="all, delete-orphan")
+    evolucoes_saude: Mapped[list["EvolucaoSaude"]] = relationship(
+        back_populates="internacao", order_by="EvolucaoSaude.criado_em, EvolucaoSaude.id", cascade="all, delete-orphan")
+    versoes_relatorios: Mapped[list["VersaoRelatorio"]] = relationship(
+        back_populates="internacao", order_by="VersaoRelatorio.id", cascade="all, delete-orphan")
+    anexos: Mapped[list["Anexo"]] = relationship(
+        back_populates="internacao", order_by="Anexo.id", cascade="all, delete-orphan")
+    relatorio_alta: Mapped["RelatorioAlta | None"] = relationship(
+        back_populates="internacao", uselist=False, cascade="all, delete-orphan")
+    notificacoes: Mapped[list["Notificacao"]] = relationship(
+        back_populates="internacao", order_by="Notificacao.id", cascade="all, delete-orphan")
+    contatos_fila: Mapped[list["ContatoFila"]] = relationship(
+        back_populates="internacao", order_by="ContatoFila.quando, ContatoFila.id", cascade="all, delete-orphan")
+
+    FORMAS = {"resp_nome": "nome", "parentesco": "frase", "doc_outro": "frase", "contribuicao_condicoes": "frase"}
+
+    def normalizar(self):
+        self.resp_cpf = so_digitos(self.resp_cpf)
+        self.resp_rg = limpar_rg(self.resp_rg)
+        # grava o valor já com a regra aplicada (convênio gratuito = 0,00)
+        self.contribuicao_valor, _ = classificar(self.convenio, self.contribuicao_valor or 0.0)
+
+    # ------------------------------------------------------------ leitura
+    @property
+    def e_triagem(self):
+        return self.status in STATUS_TRIAGEM
+
+    @property
+    def periodo_txt(self):
+        """O período da internação em palavras: '05/02/2019 a 12/08/2019', 'desde 10/03/2026' (quem está ativo), '05/02/2019 (sem data de saída)',
+        '(sem data de entrada) a 12/08/2019' ou 'sem datas'. Falta uma das datas (registro importado de uma pasta antiga): diz qual."""
+        if self.inicio and self.termino:
+            return f"{fmt_data(self.inicio)} a {fmt_data(self.termino)}"
+        if self.inicio:
+            return f"desde {fmt_data(self.inicio)}" if self.status == "ativo" else f"{fmt_data(self.inicio)} (sem data de saída)"
+        if self.termino:
+            return f"(sem data de entrada) a {fmt_data(self.termino)}"
+        return "sem datas"
+
+    @property
+    def numero_da_passagem(self):
+        """Qual passagem da pessoa é esta (1ª, 2ª...), na ordem de Pessoa.passagens; None se não é uma internação de verdade (é triagem)."""
+        return next((n for n, o in enumerate(self.pessoa.passagens, 1) if o.id == self.id), None)
+
+    @property
+    def passagens_anteriores(self):
+        """As outras internações da mesma pessoa que vieram ANTES desta, da mais antiga para a mais nova (a tabela da capa do envelope as lista, com o número de
+        cada uma). "Antes" é pela ordem de Pessoa.passagens: data de início, ou a de saída na falta dela; quem não tem data nenhuma (registro importado de uma
+        pasta antiga) conta como a mais antiga e entra na lista, com as datas em branco, para o número das passagens não ficar com buraco."""
+        minha = (self.inicio or self.termino or date.min, self.id)
+        return [o for o in self.pessoa.passagens if o.id != self.id and (o.inicio or o.termino or date.min, o.id) < minha]
+
+    @property
+    def importado(self):
+        """Veio de uma importação (pastas e planilhas antigas), não foi digitado no sistema."""
+        return bool(self.origem)
+
+    @property
+    def origem_txt(self):
+        """De onde veio, sem o número do lote: "Ex-Residentes / Saíram em 2024"."""
+        return (self.origem or "").split(" | lote ")[0]
+
+    @property
+    def lote_da_importacao(self):
+        return (self.origem or "").partition(" | lote ")[2]
+
+    @property
+    def a_conferir(self):
+        """Importado e ainda não conferido com o prontuário físico."""
+        return self.importado and self.conferido_em is None
+
+    @property
+    def conferido(self):
+        return self.importado and self.conferido_em is not None
+
+    @property
+    def status_txt(self):
+        return status_texto(self.status, self.motivo)
+
+    @property
+    def convenio_txt(self):
+        """Texto completo da linha de convênio, como vai para o Word: "Particular — Social Parcial II"."""
+        return classificar(self.convenio, self.contribuicao_valor or 0.0)[1]
+
+    @property
+    def convenio_tela(self):
+        """O convênio como aparece nas telas ("Caps AD"); o valor guardado no banco e o Word seguem como foram cadastrados ("CAPS AD")."""
+        import catalogo
+        return catalogo.atual().nome_na_tela(self.convenio)
+
+    @property
+    def categoria(self):
+        """Só a categoria efetiva, como aparece nas telas: CAPS AD, Prefeitura, Social,
+        Social I, Social II, Particular (ou "A definir")."""
+        return categoria_efetiva(self.convenio, self.contribuicao_valor or 0.0)
+
+    @property
+    def categoria_tipo(self):
+        """Classe de cor da categoria (a mesma em todas as telas)."""
+        return tipo_da_categoria(self.categoria)
+
+    def dados_completos(self):
+        """Pessoa + internação no formato do formulário (para o .docx e para editar)."""
+        return {**self.pessoa.como_formulario(), **self.como_formulario()}
+
+    def _comum(self):
+        p = self.pessoa
+        iso = lambda d: d.isoformat() if d else ""
+        return {
+            "id": self.id,
+            "pessoa_id": p.id,
+            "nome": p.nome,
+            "cpf": fmt_cpf(p.cpf),
+            "idade": calcular_idade(p.nascimento, date.today()),
+            "convenio": self.convenio_txt,      # texto completo (a busca ainda acha "particular")
+            "categoria": self.categoria,        # o que as listas mostram
+            "categoria_tipo": self.categoria_tipo,
+            "inicio": iso(self.inicio), "inicio_fmt": fmt_data(self.inicio),
+            "responsavel": self.resp_nome,
+            "parentesco": self.parentesco,
+            "contato": p.contato1 or p.contato2 or p.contato3,
+            "status": self.status,
+            "status_txt": self.status_txt,
+            "acolhimento": estado(self.relatorio_social),     # acolhimento social: "" (não iniciado) | rascunho | finalizado
+        }
+
+    def para_lista(self):
+        """Linha da lista de internos."""
+        previsao = previsao_termino(self.inicio, self.tratamento_ate)
+        return {**self._comum(),
+                "valor": self.contribuicao_valor,
+                "valor_fmt": fmt_reais(self.contribuicao_valor or 0.0),
+                "previsao": previsao.isoformat() if previsao else "",
+                "previsao_fmt": fmt_data(previsao),
+                "termino": self.termino.isoformat() if self.termino else "",
+                "termino_fmt": fmt_data(self.termino),
+                "parcelas": len(self.parcelas)}
+
+    def para_triagem(self):
+        """Linha da lista de triagens."""
+        iso = lambda d: d.isoformat() if d else ""
+        triagem = " ".join(p for p in (fmt_data(self.data_triagem), fmt_hora(self.hora_triagem)) if p)
+        agendada = " ".join(p for p in (fmt_data(self.internacao_agendada), fmt_hora(self.hora_agendada)) if p)
+        return {**self._comum(),
+                "primeiro_contato": iso(self.primeiro_contato),
+                "primeiro_contato_fmt": fmt_data(self.primeiro_contato),
+                "triagem": iso(self.data_triagem),
+                "triagem_fmt": triagem + (f" · {self.modalidade}" if self.modalidade else ""),
+                "agendada": iso(self.internacao_agendada),
+                "agendada_fmt": agendada,
+                "hora_agendada": fmt_hora(self.hora_agendada),
+                "convenio_definido": self.convenio not in ("", "A definir")}
+
+
+# =========================================================================
+class Parcela(db.Model):
+    __tablename__ = "parcelas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    numero: Mapped[int] = mapped_column()
+    data: Mapped[date | None] = mapped_column(Date)
+    valor: Mapped[float | None] = mapped_column(Float)
+
+    internacao: Mapped[Internacao] = relationship(back_populates="parcelas")
+
+
+# =========================================================================
+class RelatorioSocial(db.Model):
+    """O acolhimento social de uma internação (servico_social.py): a ficha, o relatório livre, a classificação de risco e
+    o parecer. Só as respostas que foram digitadas, num JSON {campo: texto}. Uma linha por internação; mora aqui, não em
+    colunas, porque o modelo do escritório pode mudar.
+
+    Nasce como rascunho, que a assistente social edita à vontade. Finalizar guarda a data, a hora e a assinatura (nome, cargo e
+    registro profissional de quem finalizou, como estavam naquele momento); depois a assistente social ainda pode alterar, e cada
+    alteração vira uma versão no histórico (VersaoRelatorio)."""
+    __tablename__ = "relatorios_sociais"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), unique=True)
+    dados: Mapped[dict] = mapped_column(JSON, default=dict)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    atualizado_por: Mapped[str] = mapped_column(String(50), default="")      # o usuário que salvou por último
+    situacao: Mapped[str] = mapped_column(String(12), default="rascunho")    # rascunho | finalizado
+    finalizado_em: Mapped[datetime | None] = mapped_column(DateTime)
+    finalizado_por: Mapped[str] = mapped_column(String(50), default="")      # o usuário (login) que finalizou
+    assinatura: Mapped[str] = mapped_column(String(200), default="")         # "Nome — cargo — registro", como estava ao finalizar
+
+    internacao: Mapped[Internacao] = relationship(back_populates="relatorio_social")
+
+    @property
+    def finalizado(self):
+        return self.situacao == "finalizado"
+
+
+# =========================================================================
+class FichaSaude(db.Model):
+    """A ficha de saúde (anamnese) de uma internação (ficha_saude.py): história fisiológica e patológica, investigação sobre os
+    sistemas e sobre a dependência química. Mesmo desenho do acolhimento social: só as respostas digitadas, num JSON {campo: texto},
+    uma linha por internação; nasce como rascunho e, ao ser finalizada pela enfermagem (com o COREN), guarda data, hora e
+    assinatura. Depois a enfermeira ainda pode alterar, e cada alteração vira uma versão no histórico (VersaoRelatorio)."""
+    __tablename__ = "fichas_saude"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), unique=True)
+    dados: Mapped[dict] = mapped_column(JSON, default=dict)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    atualizado_por: Mapped[str] = mapped_column(String(50), default="")
+    situacao: Mapped[str] = mapped_column(String(12), default="rascunho")    # rascunho | finalizado
+    finalizado_em: Mapped[datetime | None] = mapped_column(DateTime)
+    finalizado_por: Mapped[str] = mapped_column(String(50), default="")
+    assinatura: Mapped[str] = mapped_column(String(200), default="")         # "Nome — cargo — COREN", como estava ao finalizar
+
+    internacao: Mapped[Internacao] = relationship(back_populates="ficha_saude")
+
+    @property
+    def finalizado(self):
+        return self.situacao == "finalizado"
+
+
+class RelatorioAlta(db.Model):
+    """O relatório de alta de uma internação (relatorio_alta.py): o texto livre que a assistente social escreve quando a pessoa recebe baixa, que sai
+    impresso com os dados básicos do acolhido e a assinatura dela (nome e CRESS). Mesmo desenho do acolhimento social: as respostas num JSON
+    ({"texto": ...}), uma linha por internação; nasce como rascunho e, ao finalizar, guarda data, hora e assinatura; depois ainda se altera, e cada
+    alteração vira uma versão no histórico (VersaoRelatorio)."""
+    __tablename__ = "relatorios_alta"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), unique=True)
+    dados: Mapped[dict] = mapped_column(JSON, default=dict)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    atualizado_por: Mapped[str] = mapped_column(String(50), default="")
+    situacao: Mapped[str] = mapped_column(String(12), default="rascunho")    # rascunho | finalizado
+    finalizado_em: Mapped[datetime | None] = mapped_column(DateTime)
+    finalizado_por: Mapped[str] = mapped_column(String(50), default="")
+    assinatura: Mapped[str] = mapped_column(String(200), default="")         # "Nome — cargo — CRESS", como estava ao finalizar
+
+    internacao: Mapped[Internacao] = relationship(back_populates="relatorio_alta")
+
+    @property
+    def finalizado(self):
+        return self.situacao == "finalizado"
+
+
+class Notificacao(db.Model):
+    """Um aviso para uma pessoa (notificacoes.py): "aconteceu isto numa ficha". Cada destinatário tem o seu, que ele marca como lido sozinho (abrir a ficha
+    também marca). O sino do cabeçalho mostra os não lidos; o aviso da enfermeira ("novo prontuário cadastrado pelo escritório") sai do quadro de avisos
+    quando ela abre a ficha. Só se acrescenta (e some com o registro, se o administrador o apagar de vez)."""
+    __tablename__ = "notificacoes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    usuario: Mapped[str] = mapped_column(String(50), index=True)              # o login de quem recebe
+    tipo: Mapped[str] = mapped_column(String(20))                             # notificacoes.PRONTUARIO_NOVO | notificacoes.BAIXA
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    texto: Mapped[str] = mapped_column(String(300), default="")
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    lida_em: Mapped[datetime | None] = mapped_column(DateTime)
+
+    internacao: Mapped[Internacao] = relationship(back_populates="notificacoes")
+
+
+class ContatoFila(db.Model):
+    """Uma tentativa de contato com quem está na lista de espera (fila.py): quando, quem ligou, o que deu e, se ficou combinado, o dia de ligar de novo. Só se
+    acrescenta: o que foi registrado errado se corrige com outro registro (a fila mostra o último)."""
+    __tablename__ = "contatos_fila"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    quando: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    por: Mapped[str] = mapped_column(String(100), default="")                  # o nome de quem ligou (o funcionário; na falta dele, o login)
+    resultado: Mapped[str] = mapped_column(String(20))                         # uma chave de fila.RESULTADOS
+    observacao: Mapped[str] = mapped_column(String(300), default="")
+    retornar_em: Mapped[date | None] = mapped_column(Date)
+
+    internacao: Mapped[Internacao] = relationship(back_populates="contatos_fila")
+
+
+@event.listens_for(Internacao, "before_insert")
+@event.listens_for(Internacao, "before_update")
+def _carimbar_a_fila(mapper, conexao, internacao):
+    """Quem passa a ser "lista de espera" ganha o carimbo da entrada na fila (a ordem de chegada). O carimbo fica enquanto a pessoa só muda para "em admissão" e volta
+    (não perde o lugar); some quando ela sai de vez (admitida, desistência, rejeitada), junto com a posição manual e o dia de ligar de novo."""
+    if internacao.status == "lista_espera":
+        if internacao.fila_desde is None:
+            internacao.fila_desde = datetime.now()
+    elif internacao.status != "em_admissao":
+        for campo in ("fila_desde", "fila_ordem", "fila_retornar_em"):
+            if getattr(internacao, campo) is not None:
+                setattr(internacao, campo, None)
+
+
+class RegistroEnfermagem(db.Model):
+    """Um registro da Sistematização da Assistência de Enfermagem: sinais vitais, glicemia capilar, perdas e a evolução de enfermagem
+    daquele momento. Só se acrescenta (ficha_saude.py); o que estava errado se corrige com um registro novo."""
+    __tablename__ = "registros_enfermagem"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    quando: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)  # o horário em que foi medido
+    pa: Mapped[str] = mapped_column(String(10), default="")                   # "120/80"
+    pulso: Mapped[int | None] = mapped_column()
+    temperatura: Mapped[float | None] = mapped_column(Float)
+    fr: Mapped[int | None] = mapped_column()
+    bcf: Mapped[int | None] = mapped_column()
+    glicemia: Mapped[int | None] = mapped_column()
+    peso: Mapped[float | None] = mapped_column(Float)
+    volume_urinario: Mapped[str] = mapped_column(String(60), default="")
+    evacuacao: Mapped[str] = mapped_column(String(60), default="")
+    evolucao: Mapped[str] = mapped_column(String(3000), default="")
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    criado_por: Mapped[str] = mapped_column(String(200), default="")         # "Nome — cargo — COREN" de quem registrou
+
+    internacao: Mapped[Internacao] = relationship(back_populates="registros_enfermagem")
+
+
+class EvolucaoSaude(db.Model):
+    """Uma anotação da evolução multiprofissional: de cada profissional da equipe (médica, enfermagem, nutrição, psicologia, assistência
+    social), do coordenador operacional ou de outros profissionais. Só se acrescenta."""
+    __tablename__ = "evolucoes_saude"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    categoria: Mapped[str] = mapped_column(String(20))                       # chave de ficha_saude.CATEGORIAS_DE_EVOLUCAO
+    texto: Mapped[str] = mapped_column(String(3000))
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    criado_por: Mapped[str] = mapped_column(String(200), default="")         # "Nome — cargo — registro" de quem escreveu
+
+    internacao: Mapped[Internacao] = relationship(back_populates="evolucoes_saude")
+
+
+class VersaoRelatorio(db.Model):
+    """Uma entrada do histórico de versões do acolhimento social, da ficha de saúde ou do relatório de alta (versoes.py), depois de finalizados: `finalizado` é o relatório
+    como foi finalizado, `alterado` é cada alteração feita depois (o relatório inteiro daquele momento, e quais respostas mudaram) e `adendo` é um
+    adendo de antes de o histórico existir (só o texto). Só se acrescenta; só o administrador vê."""
+    __tablename__ = "versoes_relatorios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    tipo: Mapped[str] = mapped_column(String(8))                             # social | saude | alta
+    evento: Mapped[str] = mapped_column(String(12))                          # finalizado | alterado | adendo
+    dados: Mapped[dict] = mapped_column(JSON, default=dict)                  # as respostas daquela versão (vazio no adendo)
+    campos: Mapped[list] = mapped_column(JSON, default=list)                 # chaves das respostas que mudaram em relação à versão anterior
+    texto: Mapped[str] = mapped_column(String(3000), default="")             # só o adendo antigo
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    criado_por: Mapped[str] = mapped_column(String(200), default="")         # "Nome — cargo — registro" de quem finalizou, alterou ou escreveu
+
+    internacao: Mapped[Internacao] = relationship(back_populates="versoes_relatorios")
+
+
+class Anexo(db.Model):
+    """Um documento escaneado anexado a um registro (anexos.py): o PDF do documento físico assinado. O arquivo fica em disco (instance/anexos/<registro>/<arquivo>);
+    aqui está só o que o sistema precisa saber dele. Quem não é administrador só "remove" (some da ficha, o arquivo continua no disco); o administrador restaura
+    ou apaga de vez, como nos registros (exclusao.py)."""
+    __tablename__ = "anexos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    internacao_id: Mapped[int] = mapped_column(ForeignKey("internacoes.id"), index=True)
+    titulo: Mapped[str] = mapped_column(String(100), default="")                  # "Prontuário assinado", "Termo de compromisso"...
+    area: Mapped[str] = mapped_column(String(12), default="")                     # a que área o documento está vinculado (anexos.AREAS): "" geral, "saude", "financeiro" ou "social"
+    nome_original: Mapped[str] = mapped_column(String(200), default="")           # como o arquivo se chamava no computador de quem enviou (só para mostrar)
+    arquivo: Mapped[str] = mapped_column(String(40))                              # o nome no disco: um código sorteado + ".pdf" (nunca o que a pessoa digitou)
+    tamanho: Mapped[int] = mapped_column(default=0)                               # bytes
+    sha256: Mapped[str] = mapped_column(String(64), index=True)                   # a impressão digital do arquivo: acha o mesmo arquivo enviado duas vezes e prova que não mudou
+    enviado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    enviado_por: Mapped[str] = mapped_column(String(50), default="")              # o login
+    excluido_em: Mapped[datetime | None] = mapped_column(DateTime)
+    excluido_por: Mapped[str] = mapped_column(String(50), default="")
+
+    internacao: Mapped[Internacao] = relationship(back_populates="anexos")
+
+
+# =========================================================================
+class CodigoSeguranca(db.Model):
+    """Códigos de uso único que a pessoa recebe por e-mail (contas.py): o de 6 dígitos que confirma o e-mail e o link do "esqueci
+    minha senha". Só o resumo (sha256) do código é guardado: quem lê o banco não consegue usá-lo."""
+    __tablename__ = "codigos_seguranca"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    usuario_id: Mapped[int] = mapped_column(index=True)
+    finalidade: Mapped[str] = mapped_column(String(10), index=True)                # "email" ou "senha"
+    resumo: Mapped[str] = mapped_column(String(64), index=True)
+    destino: Mapped[str] = mapped_column(String(120), default="")                  # para qual e-mail foi enviado
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    expira_em: Mapped[datetime] = mapped_column(DateTime)
+    usado_em: Mapped[datetime | None] = mapped_column(DateTime)
+    tentativas: Mapped[int] = mapped_column(default=0)
+
+
+# =========================================================================
+class Rascunho(db.Model):
+    """O que alguém estava digitando num formulário e ainda não gravou (rascunhos.py): a página manda uma cópia a cada pausa na digitação, para
+    uma queda de energia, uma aba fechada sem querer ou um navegador travado não custarem o trabalho. É só de quem digitou: ninguém mais o vê.
+    `token` nasce na página e identifica o rascunho entre um envio e outro. Quando o formulário é gravado de verdade, a linha vira uma lápide
+    (`concluido_em`, sem dados): se um envio atrasado chegar depois, não ressuscita o rascunho. Sem chave para as outras tabelas, como `Evento`:
+    apagar um registro de vez não esbarra em rascunho, e rascunhos.py limpa os dele."""
+    __tablename__ = "rascunhos"
+    __table_args__ = (UniqueConstraint("usuario_id", "token"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(String(32))
+    usuario_id: Mapped[int] = mapped_column(index=True)
+    tipo: Mapped[str] = mapped_column(String(12))                                     # rascunhos.TIPOS: triagem, prontuario, acolhimento, saude...
+    internacao_id: Mapped[int | None] = mapped_column(index=True)                     # a internação da tela (editar, acolhimento...); vazio = registro novo
+    titulo: Mapped[str] = mapped_column(String(200), default="")                      # o nome do acolhido, para a lista de rascunhos
+    dados: Mapped[dict] = mapped_column(JSON, default=dict)                           # o formulário: {campo: texto, ou lista de textos}
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    concluido_em: Mapped[datetime | None] = mapped_column(DateTime)                   # gravado de verdade: lápide, sem dados
+
+
+# =========================================================================
+class Evento(db.Model):
+    """Trilha de auditoria (auditoria.py): quem fez o quê, em qual registro e quando. Só se acrescenta: nenhuma tela edita nem
+    apaga. Não guarda o conteúdo dos dados (só QUAIS campos mudaram) e não aponta para as outras tabelas por chave: sobrevive
+    a um 'apagar de vez' e não vira uma segunda cópia dos dados sensíveis."""
+    __tablename__ = "eventos_auditoria"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quando: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    usuario: Mapped[str] = mapped_column(String(50), default="", index=True)       # o login (vazio: ninguém entrou, ou usuário que não existe)
+    acao: Mapped[str] = mapped_column(String(40), index=True)                      # o código (auditoria.ACOES)
+    categoria: Mapped[str] = mapped_column(String(15), index=True)                 # entrada, leitura, alteracao, administracao ou negado
+    alvo_tipo: Mapped[str] = mapped_column(String(20), default="")                 # internacao, funcionario, nivel...
+    alvo_id: Mapped[int | None] = mapped_column()
+    pessoa_id: Mapped[int | None] = mapped_column(index=True)                      # o acolhido, para "tudo o que mexeu nesta pessoa"
+    detalhe: Mapped[str] = mapped_column(String(300), default="")
+    endereco: Mapped[str] = mapped_column(String(45), default="")                  # o endereço de rede do computador
+    navegador: Mapped[str] = mapped_column(String(120), default="")
+
+
+# =========================================================================
+class AvisoDispensado(db.Model):
+    """Avisos que alguém marcou como 'ciente' no quadro da home."""
+    __tablename__ = "avisos_dispensados"
+
+    chave: Mapped[str] = mapped_column(String(200), primary_key=True)
+    dispensado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# =========================================================================
+class Convenio(db.Model):
+    """Convênios do cadastro (Cadastros > Convênios). Veja catalogo.py: é de lá que o resto do sistema os lê."""
+    __tablename__ = "convenios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nome: Mapped[str] = mapped_column(String(50), unique=True)     # o texto guardado em cada internação: não muda
+    nome_tela: Mapped[str] = mapped_column(String(50))            # como aparece nas telas
+    slug: Mapped[str] = mapped_column(String(60), unique=True)    # endereço do relatório do convênio
+    gratuito: Mapped[bool] = mapped_column(default=True)          # contribuição sempre R$ 0,00 (o Particular não é)
+    vagas: Mapped[int | None] = mapped_column()                   # limite de vagas; vazio = não definido
+    cor: Mapped[str] = mapped_column(String(20), default="outro")
+    ativo: Mapped[bool] = mapped_column(default=True)             # desativado: não aparece para escolher, o histórico fica
+    ordem: Mapped[int] = mapped_column(default=0)
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class NivelAcesso(db.Model):
+    """Níveis de acesso (Cadastros > Níveis de acesso), em cascata: o de `ordem` menor tem mais acesso e inclui tudo o que
+    os de baixo têm. O que cada nível pode fazer fica em PermissaoNivel (veja permissoes.py)."""
+    __tablename__ = "niveis_acesso"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nome: Mapped[str] = mapped_column(String(50), unique=True)
+    descricao: Mapped[str] = mapped_column(String(200), default="")
+    ordem: Mapped[int] = mapped_column(default=0)                 # 1 = o que tem mais acesso
+    ativo: Mapped[bool] = mapped_column(default=True)
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PermissaoNivel(db.Model):
+    """O nível mínimo de cada permissão (Cadastros > Permissões): quem está nesse nível, ou acima dele na cascata, pode.
+    Uma linha por permissão configurável (a lista está em permissoes.py); a que não tem linha cai no padrão de fábrica."""
+    __tablename__ = "permissoes_nivel"
+
+    chave: Mapped[str] = mapped_column(String(40), primary_key=True)
+    nivel_id: Mapped[int] = mapped_column(ForeignKey("niveis_acesso.id"))
+    alterado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    alterado_por: Mapped[str] = mapped_column(String(50), default="")
+
+    nivel: Mapped[NivelAcesso] = relationship()
+
+
+class Funcionario(db.Model):
+    """Quem trabalha no escritório (Cadastros > Funcionários): assina como responsável pela emissão dos documentos."""
+    __tablename__ = "funcionarios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nome: Mapped[str] = mapped_column(String(200))
+    cargo: Mapped[str] = mapped_column(String(100), default="")
+    ativo: Mapped[bool] = mapped_column(default=True)
+    padrao: Mapped[bool] = mapped_column(default=False)           # assina quando ninguém escolhe (só um por vez)
+    usuario: Mapped[str] = mapped_column(String(50), default="")  # login desta pessoa: os documentos que ela emite saem no nome dela
+    nivel_id: Mapped[int | None] = mapped_column(ForeignKey("niveis_acesso.id"), index=True)
+    # Serviço Social: lê e escreve o acolhimento social (ficha, relatório e parecer), que é sigiloso, e assina com o
+    # registro profissional (CRESS). O administrador também tem acesso, sem precisar desta marca.
+    servico_social: Mapped[bool] = mapped_column(default=False)
+    registro_profissional: Mapped[str] = mapped_column(String(30), default="")
+    # Função na equipe de saúde (só o administrador muda): uma chave de cadastros.PROFISSOES, ou "" para nenhuma. `servico_social` acompanha
+    # ("assistente_social") e continua sendo o que o resto do sistema consulta; o registro de cada função é o do conselho dela (CRESS, COREN...).
+    profissao: Mapped[str] = mapped_column(String(20), default="")
+    # O polo de trabalho (só o administrador muda): "escritorio" ou "saude" (cadastros.POLOS), ou "" enquanto o administrador não definiu (vale como antes: só o
+    # nível de acesso decide). O polo restringe e direciona (permissoes.POR_POLO e notificacoes.py); os dados são os mesmos para todos.
+    polo: Mapped[str] = mapped_column(String(10), default="")
+    # Lê, sem editar, os relatórios sigilosos (o acolhimento social e a ficha de saúde). Permissão à parte, dada pessoa a pessoa pelo
+    # administrador: não depende do nível de acesso.
+    le_sigilosos: Mapped[bool] = mapped_column(default=False)
+    # e-mail institucional (só o administrador altera): serve para o "esqueci minha senha" e para os avisos de segurança, e só vale
+    # depois de confirmado com um código enviado a ele (contas.py)
+    email: Mapped[str] = mapped_column(String(120), default="")
+    email_confirmado_em: Mapped[datetime | None] = mapped_column(DateTime)
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    nivel: Mapped[NivelAcesso | None] = relationship()
+
+
+# =========================================================================
+class Usuario(db.Model):
+    """Quem pode entrar no sistema. A senha nunca é gravada: só o hash dela."""
+    __tablename__ = "usuarios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nome: Mapped[str] = mapped_column(String(50), unique=True)  # sempre em minúsculas
+    senha_hash: Mapped[str] = mapped_column(String(256))
+    ativo: Mapped[bool] = mapped_column(default=True)
+    # proteção contra tentativa e erro: após várias senhas erradas, bloqueia por um tempo
+    falhas: Mapped[int] = mapped_column(default=0)
+    bloqueado_ate: Mapped[datetime | None] = mapped_column(DateTime)
+    # senha que o administrador definiu: a pessoa tem de trocá-la antes de usar qualquer outra tela
+    trocar_senha: Mapped[bool] = mapped_column(default=False)
+    # acesso novo, criado pelo administrador: antes de usar o sistema a pessoa confirma o e-mail com o código (contas.py). Só vale para quem
+    # nasceu assim; quem já tinha acesso não é barrado (vê o aviso "Sua conta" até confirmar).
+    exigir_email: Mapped[bool] = mapped_column(default=False)
+    # segundo fator (aplicativo autenticador no celular, TOTP; totp.py). O segredo fica CIFRADO com uma chave que não vai no banco
+    # (instance/secret.key), para um backup do banco sozinho não bastar. `totp_ativo` só vale depois de a pessoa digitar um código
+    # que o aplicativo gerou (até lá o segredo é só de uma ativação pendente).
+    totp_segredo: Mapped[str] = mapped_column(String(200), default="")
+    totp_ativo: Mapped[bool] = mapped_column(default=False)
+    totp_ultimo_passo: Mapped[int] = mapped_column(default=0)                      # o último código aceito: um código só vale uma vez
+    totp_recuperacao: Mapped[str] = mapped_column(String(2000), default="")        # resumos (scrypt) dos códigos de recuperação que ainda não foram usados
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

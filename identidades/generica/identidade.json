@@ -1,0 +1,160 @@
+{
+  "nome": "Casa Exemplo",
+  "apelido": "Casa Exemplo",
+  "nome_formal": "Comunidade Terapêutica Casa Exemplo",
+  "sistema": "Sistema de prontuários",
+  "mantenedora": "Associação Exemplo",
+  "cidade": "Cidade Exemplo",
+  "lema": "Cuidar é recomeçar!",
+  "endereco_curto": "Rua Exemplo, 100 – Cidade Exemplo – UF",
+  "emissor": {
+    "nome": "Responsável Administrativo",
+    "cargo": "Assistente Administrativo"
+  },
+  "cabecalho": [
+    [
+      [
+        "Comunidade Terapêutica",
+        "b"
+      ]
+    ],
+    [
+      [
+        "Casa Exemplo",
+        "b"
+      ]
+    ],
+    [
+      [
+        "Cuidar é recomeçar!",
+        "b vermelho"
+      ]
+    ],
+    [
+      [
+        "Rua Exemplo, 100 – Cidade Exemplo – UF",
+        ""
+      ]
+    ]
+  ],
+  "rodape": [
+    [
+      [
+        "Associação Exemplo - ",
+        "b serifa"
+      ],
+      [
+        "Acolher é a nossa missão",
+        "b vermelho"
+      ]
+    ],
+    [
+      [
+        "Escritório: Avenida Modelo, 200 – Centro – Cidade Exemplo – UF.",
+        ""
+      ]
+    ],
+    [
+      [
+        "Telefone: (00) 0000-0000 (00) 90000-0000 CEP 00000-000",
+        ""
+      ]
+    ],
+    [
+      [
+        "CNPJ 00.000.000/0001-00",
+        ""
+      ]
+    ],
+    [
+      [
+        "Instituição fictícia, criada para demonstração do sistema.",
+        ""
+      ]
+    ],
+    [
+      [
+        "www.example.org",
+        "link"
+      ],
+      [
+        "    ",
+        ""
+      ],
+      [
+        "contato@example.org",
+        "link"
+      ]
+    ]
+  ],
+  "declaracao_apresentacao": " mantida pela Associação Exemplo, inscrita no CNPJ sob o n° 00.000.000/0001-00, com escritório administrativo situado à Avenida Modelo, 200 em Cidade Exemplo-UF,",
+  "email": {
+    "exemplo_pessoa": "nome@example.org",
+    "exemplo_caixa": "sistema@example.org",
+    "endereco_do_sistema_exemplo": "http://192.168.0.10:8000",
+    "caixa_padrao": "",
+    "avisos_padrao": "",
+    "servidor_padrao": "smtp.example.org",
+    "porta_padrao": 465,
+    "seguranca_padrao": "ssl"
+  },
+  "convenios": [
+    [
+      "CAPS AD",
+      "Caps AD",
+      "caps-ad",
+      true,
+      9,
+      "caps"
+    ],
+    [
+      "Prefeitura Municipal",
+      "Prefeitura Municipal",
+      "prefeitura",
+      true,
+      10,
+      "laranja"
+    ],
+    [
+      "Particular",
+      "Particular",
+      "particular",
+      false,
+      null,
+      "particular"
+    ]
+  ],
+  "convenio_apelidos": {
+    "particular": "Particular",
+    "caps ad": "CAPS AD",
+    "capsad": "CAPS AD",
+    "prefeitura": "Prefeitura Municipal",
+    "convenio prefeitura": "Prefeitura Municipal",
+    "prefeitura municipal": "Prefeitura Municipal",
+    "social": "Particular"
+  },
+  "palavras_fracas": [],
+  "cores_antigas": {},
+  "textos": {
+    "contrato_familia": "Tal tratamento só será possível com a participação efetiva dos familiares, que serão solicitados a comparecer às reuniões dos grupos de apoio familiar e às atividades complementares.",
+    "contrato_tripe": [
+      "Interno deverá cumprir rigorosamente as normas e regulamentos da comunidade terapêutica, em relação a ",
+      {
+        "n": "disciplina, convivência e laborterapia, para que o tratamento de fato ocorra"
+      },
+      ". Evitando assim, o seu desligamento."
+    ],
+    "grupos_de_ajuda": [
+      {
+        "n": "Participar de grupos de apoio e ajuda mútua (AA, NA, Amor-Exigente) ou outros..."
+      }
+    ],
+    "compromisso_tripe": [
+      {
+        "n": "Declaro"
+      },
+      " ter recebido uma cópia do “Manual de Orientação para Famílias e Residentes”, referente ao compromisso de direitos e deveres, de internos e família, durante o período de internação do candidato, estando ciente que para a realização do tratamento adequado é necessário que realize o tripé do tratamento Disciplina, Convivência e Laborterapia."
+    ],
+    "declaracao_punho": "Eu, {interno}, declaro que é de minha livre e espontânea vontade aderir ao Programa Terapêutico oferecido pela {casa}, declaro também que estou ciente do período de tratamento que é de 9 (nove) meses baseado no tripé Disciplina, Convivência e Laborterapia e me comprometo a cumpri-los."
+  }
+}

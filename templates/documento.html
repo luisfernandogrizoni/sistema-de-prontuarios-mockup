@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import voltar with context %}
+{#
+  Mostra um Documento (documentos.py) para ver e imprimir no navegador: cada página é uma folha A4 com o timbre.
+  Variáveis: doc (Documento), docx (endereço do download), avisos (alertas só da tela), cabecalho/rodape (timbre), embutido (os impressos e os relatórios: a página
+  aparece dentro de outra (a aba "Imprimir" da ficha, a tela de Relatórios), ao lado da caixa que escolhe os documentos: só as folhas, sem o menu do sistema, o "Voltar", o título nem os botões).
+#}
+
+{% set pilhas_de_fonte = {'Arial': 'Arial, Helvetica, sans-serif', 'Verdana': 'Verdana, Geneva, "DejaVu Sans", sans-serif', 'Times New Roman': '"Times New Roman", Times, serif'} %}
+{% block titulo %}{{ doc.titulo }}{% endblock %}
+
+{% block estilo %}
+  .barra-doc { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  .barra-doc h1 { font-size: 1.1rem; margin: 0 auto 0 4px; }
+  .barra-doc .botoes-doc { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* A folha é sempre uma A4 de verdade (210 x 297 mm, margens de verdade), em qualquer tela: se a tela é estreita (celular, preview ao lado da caixa), cada folha é só DESENHADA menor,
+     na mesma proporção (transform: scale), em vez de reorganizar o texto: o layout continua o de uma A4 e o texto quebra igual. --escala, --ml (margem à esquerda) e --mb (o espaço
+     que a escala devolve embaixo) são calculados por folha em static/paginacao.js. Na impressão não há escala. (Não é `zoom`: com ele o navegador não deixa a letra ficar menor que
+     o mínimo dele e o texto passa a quebrar diferente em escala pequena.) */
+  .mesa { background: #e4e7ec; border-radius: var(--raio); padding: 24px 16px; overflow-x: hidden; }          /* (a folha escalada cabe; o layout dela, de 210/297 mm, não cria rolagem de lado) */
+  .papel { width: 210mm; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(16, 24, 40, .18); color: #000; }
+  .papel.paisagem { width: 297mm; }
+  @media screen { .papel { transform: scale(var(--escala, 1)); transform-origin: 0 0; margin-left: var(--ml, auto); margin-bottom: var(--mb, 0px); } }
+  .papel + .papel { margin-top: 18px; }
+  .folha { width: 100%; height: 296mm; border-collapse: collapse; table-layout: fixed; }
+  .papel.paisagem .folha { height: 209mm; }
+  .folha > thead > tr > td, .folha > tfoot > tr > td { padding: 10mm var(--margem) 0; vertical-align: top; }
+  .folha > tfoot > tr > td { padding: 0 var(--margem) 9mm; vertical-align: bottom; }
+  .folha > tbody > tr > td { padding: 3mm var(--margem) 6mm; vertical-align: top; height: 100%; }
+
+  /* timbre: logo à esquerda, texto centralizado na página */
+  .timbre { display: grid; align-items: center; gap: 0 8px; text-align: center; line-height: 1.25; }
+  .timbre-topo { grid-template-columns: 23mm 1fr 23mm; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; }
+  .timbre-rodape { grid-template-columns: 25mm 1fr 25mm; font-family: Arial, Helvetica, sans-serif; font-size: 9pt; }
+  .timbre img { display: block; width: 100%; height: auto; }
+  .timbre .b { font-weight: 700; }
+  .timbre .vermelho { color: #f00; }
+  .timbre .serifa { font-family: "Times New Roman", Times, serif; }
+  .timbre .link { color: #0563c1; text-decoration: underline; }
+
+  /* corpo */
+  .doc-corpo { font-family: {{ pilhas_de_fonte.get(doc.fonte, pilhas_de_fonte['Arial']) | safe }}; font-size: {{ doc.tamanho }}pt; }
+  .doc-corpo h2 { text-align: center; font-weight: 700; line-height: 1.2; }
+  .doc-corpo p { margin: 0; line-height: 1.15; }
+  .doc-corpo p, .doc-corpo td, .doc-corpo th { white-space: pre-wrap; }
+  .al-esquerda { text-align: left; } .al-centro { text-align: center; } .al-direita { text-align: right; } .al-justificado { text-align: justify; }
+  .doc-corpo .unido { break-after: avoid; }
+  .doc-corpo .num { display: inline-block; text-indent: 0; }
+  table.doc-tabela { border-collapse: collapse; table-layout: fixed; margin-left: auto; margin-right: auto; }
+  .doc-tabela th, .doc-tabela td { border: .5pt solid var(--borda-tab, #808080); padding: 2.5pt 4.5pt; overflow-wrap: anywhere; }
+  .doc-tabela.sem-bordas th, .doc-tabela.sem-bordas td { border: 0; }
+  .doc-tabela td:empty::before { content: "\00a0"; }       /* célula vazia mantém a altura de uma linha (folhas de preencher à mão) */
+  .doc-tabela.sombreado th { background: #d9d9d9; }
+  .doc-tabela th { text-align: center; font-weight: 700; }
+  .doc-tabela tr { break-inside: avoid; }
+  .doc-tabela .negrito td { font-weight: 700; }
+  table.doc-form { border-collapse: collapse; table-layout: fixed; margin: 0 auto; }
+  .doc-form td { border: .5pt solid #000; padding: 0 5.4pt 3pt; vertical-align: top; overflow-wrap: anywhere; }
+  .doc-form .rotulo { font-weight: 700; }
+  .doc-form tr { break-inside: avoid; }
+  .pauta > div { border-bottom: .75pt solid #000; }
+  .assinaturas { display: grid; text-align: center; break-inside: avoid; }
+  .doc-assinatura { text-align: center; break-inside: avoid; line-height: 1.2; }
+  .doc-assinatura .traco { width: 8cm; max-width: 100%; margin: 0 auto 2pt; border-top: .75pt solid #000; }
+  .doc-assinatura .nome { font-weight: 700; }
+  .doc-assinatura .papel-de-quem { font-style: italic; }
+  .doc-colunas { display: grid; }
+  .doc-imagem { line-height: 0; }
+  .doc-imagem img { height: auto; }
+
+  {% if embutido %}
+  header.topo, .cabecalho-impressao { display: none !important; }
+  main, main.largo { max-width: none; margin: 0; padding: 0; }
+  html { scrollbar-gutter: stable; }           /* a barra de rolagem do quadro não muda a largura de onde a folha é encolhida */
+  {% endif %}
+  @media (max-width: 760px) {
+    .barra-doc .botoes-doc { width: 100%; }
+    .barra-doc .botoes-doc .botao { flex: 1 1 0; }
+  }
+  @media print {
+    @page { size: A4; margin: 0; }
+    @page paisagem { size: A4 landscape; margin: 0; }           /* as páginas em paisagem (capa do envelope, folha de enfermagem) */
+    .cabecalho-impressao, .barra-doc, .aviso { display: none !important; }
+    main, main.largo { max-width: none; margin: 0; padding: 0; }
+    .mesa { background: none; padding: 0; border-radius: 0; overflow: visible; }
+    .papel { width: auto; box-shadow: none; break-after: page; }
+    .papel.paisagem { page: paisagem; }
+    .papel:last-of-type { break-after: auto; }
+    .papel + .papel { margin-top: 0; }
+    .folha { height: 296mm; }
+    .papel.paisagem .folha { height: 209mm; }
+    .folha > thead { display: table-header-group; }
+    .folha > tfoot { display: table-footer-group; }
+    .timbre-topo { grid-template-columns: 23mm 1fr 23mm; font-size: 10pt; }
+    .timbre-rodape { grid-template-columns: 25mm 1fr 25mm; font-size: 9pt; }
+  }
+{% endblock %}
+
+{% macro timbre(linhas) -%}
+  {% for linha in linhas %}<div>{% for texto, estilo in linha %}<span class="{{ estilo }}">{{ texto }}</span>{% endfor %}</div>{% endfor %}
+{%- endmacro %}
+
+{% macro corpo(blocos, doc, largura) -%}
+  {% for b in blocos %}
+    {% if b.tipo == 'titulo' %}
+      <h2 style="font-size: {{ b.tamanho }}pt; margin: {{ b.antes }}pt 0 {{ b.depois }}pt;">{{ b.texto }}</h2>
+    {% elif b.tipo == 'paragrafo' %}
+      <p class="al-{{ b.alinhamento }}{{ ' unido' if b.unido_ao_proximo }}"
+         style="margin: {{ b.antes }}pt 0 {{ b.depois }}pt;{% if b.recuo %} padding-left: {{ b.recuo / 20 }}pt;{% endif %}{% if b.suspenso %} text-indent: -{{ b.suspenso / 20 }}pt;{% elif b.primeira_linha %} text-indent: {{ b.primeira_linha / 20 }}pt;{% endif %} line-height: {{ (1.15 * b.entrelinha) | round(2) }};{% if b.tamanho %} font-size: {{ b.tamanho }}pt;{% endif %}{% if b.fonte %} font-family: '{{ b.fonte }}', Arial, sans-serif;{% endif %}">
+        {%- if b.numero %}<span class="num" style="width: {{ b.suspenso / 20 }}pt;">{{ b.numero }}</span>{% endif -%}
+        {%- for t in b.trechos() %}{% if t.negrito or t.italico or t.sublinhado %}<span style="{{ 'font-weight:700;' if t.negrito }}{{ 'font-style:italic;' if t.italico }}{{ 'text-decoration:underline;' if t.sublinhado }}">{{ t.texto }}</span>{% else %}{{ t.texto }}{% endif %}{% endfor -%}
+      </p>
+    {% elif b.tipo == 'tabela' %}
+      <table class="doc-tabela{{ ' sem-bordas' if b.sem_bordas }}{{ ' sombreado' if b.sombreado }}"
+             style="--borda-tab: #{{ b.cor_borda }}; width: {{ (b.largura_total() * 100 / largura) | round(2) }}%; margin-top: {{ b.antes }}pt; font-size: {{ b.tamanho }}pt;">
+        <colgroup>{% for p in b.porcentagens() %}<col style="width: {{ p }}%">{% endfor %}</colgroup>
+        {% if b.cabecalho %}<thead><tr{% if b.altura_cabecalho %} style="height: {{ b.altura_cabecalho / 20 }}pt;"{% endif %}>{% for c in b.colunas %}<th>{{ c.titulo }}</th>{% endfor %}</tr></thead>{% endif %}
+        <tbody>
+          {% for linha in b.linhas %}
+          <tr class="{{ 'negrito' if loop.index0 in b.negrito_linhas }}">
+            {%- for valor in linha %}<td class="al-{{ b.colunas[loop.index0].alinhamento }}">{{ valor }}</td>{% endfor -%}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% elif b.tipo == 'formulario' %}
+      <table class="doc-form" style="width: {{ (b.largura_total() * 100 / largura) | round(2) }}%; margin-top: {{ b.antes }}pt; font-size: {{ b.tamanho }}pt;">
+        <colgroup>{% for g in b.grade %}<col style="width: {{ (g * 100 / b.largura_total()) | round(3) }}%">{% endfor %}</colgroup>
+        <tbody>
+          {% for linha in b.linhas %}
+          <tr style="height: {{ b.alturas[loop.index0] / 20 }}pt;">
+            {%- for c in linha %}<td colspan="{{ c.span }}"{% if c.negrito %} class="rotulo"{% endif %}>{{ c.texto }}</td>{% endfor -%}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% elif b.tipo == 'pauta' %}
+      <div class="pauta" style="margin-top: {{ b.antes }}pt;">{% for i in range(b.linhas) %}<div style="height: {{ b.altura }}pt;"></div>{% endfor %}</div>
+    {% elif b.tipo == 'assinaturas' %}
+      <div class="assinaturas" style="grid-template-columns: repeat({{ b.rotulos | length }}, 1fr); margin-top: {{ b.antes }}pt;">
+        {% for r in b.rotulos %}<div><div>{{ '_' * b.comprimento }}</div><div style="font-size: {{ b.tamanho_rotulo }}pt;">{{ r }}</div></div>{% endfor %}
+      </div>
+    {% elif b.tipo == 'assinatura' %}
+      <div class="doc-assinatura" style="margin-top: {{ b.antes }}pt;">
+        <div class="traco"></div>
+        <div class="nome">{{ b.nome }}</div>
+        <div>{{ b.cargo }}</div>
+        {% if b.registro %}<div>{{ b.registro }}</div>{% endif %}
+        <div class="papel-de-quem">{{ b.papel }}</div>
+      </div>
+    {% elif b.tipo == 'imagem' %}
+      <div class="doc-imagem al-{{ b.alinhamento }}" style="margin-top: {{ b.antes }}pt;"><img src="{{ url_for('static', filename=b.arquivo) }}" alt="" style="width: {{ b.largura }}mm;"></div>
+    {% elif b.tipo == 'colunas' %}
+      <div class="doc-colunas" style="grid-template-columns: repeat({{ b.colunas | length }}, minmax(0, 1fr)); column-gap: {{ b.espaco / 20 }}pt; margin-top: {{ b.antes }}pt;">
+        {% for coluna in b.colunas %}<div>{{ corpo(coluna, doc, largura) }}</div>{% endfor %}
+      </div>
+    {% endif %}
+  {% endfor %}
+{%- endmacro %}
+
+{% block conteudo %}
+<main class="largo">
+  {% if not embutido %}
+  <div class="barra-doc">
+    {{ voltar(doc.voltar or url_for('home')) }}
+    <h1>{{ doc.titulo }}</h1>
+    <div class="botoes-doc">
+      <button type="button" class="botao" data-imprimir><svg class="icone"><use href="#i-impressora"/></svg>Imprimir</button>
+      {% if docx %}<a class="botao secundario" href="{{ docx }}"><svg class="icone"><use href="#i-baixar"/></svg>Baixar Word</a>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% for texto in avisos %}<div class="aviso erro">{{ texto }}</div>{% endfor %}
+
+  <div class="mesa">
+    {% for folha in doc.paginas() %}
+    <article class="papel{{ ' paisagem' if folha.paisagem }}" style="--margem: {{ ((folha.margem_lateral or doc.margem_lateral) / 56.7) | round(1) }}mm;">
+      <table class="folha">
+        {% if folha.timbre %}
+        <thead><tr><td>
+          <div class="timbre timbre-topo">
+            <img src="{{ identidade.url('timbre/logo-topo.jpg') }}" alt="">
+            <div>{{ timbre(cabecalho) }}</div><span></span>
+          </div>
+        </td></tr></thead>
+        {% endif %}
+        <tbody><tr><td class="doc-corpo"{% if folha.fonte or folha.tamanho %} style="font-family: {{ pilhas_de_fonte.get(folha.fonte or doc.fonte, pilhas_de_fonte['Arial']) | safe }}; font-size: {{ folha.tamanho or doc.tamanho }}pt;"{% endif %}>{{ corpo(folha.blocos, doc, doc.largura_da(folha)) }}</td></tr></tbody>
+        {% if folha.timbre %}
+        <tfoot><tr><td>
+          <div class="timbre timbre-rodape">
+            <img src="{{ identidade.url('timbre/logo-rodape.jpg') }}" alt="">
+            <div>{{ timbre(rodape) }}</div><span></span>
+          </div>
+        </td></tr></tfoot>
+        {% endif %}
+      </table>
+    </article>
+    {% endfor %}
+  </div>
+</main>
+<script src="{{ url_for('static', filename='paginacao.js') }}"></script>
+<script nonce="{{ csp_nonce() }}">
+  // "Imprimir" nas outras telas abre este documento já com a janela de impressão
+  if (new URLSearchParams(location.search).get("imprimir")) {
+    window.addEventListener("load", function () { setTimeout(function () { window.print(); }, 350); });
+  }
+</script>
+{% endblock %}

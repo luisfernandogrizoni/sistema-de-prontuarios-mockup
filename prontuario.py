@@ -1,0 +1,473 @@
+"""
+Geração do prontuário (Word e página do navegador) a partir dos dados do formulário.
+
+Tudo o que é regra do documento mora aqui: formatação de datas, CPF e R$,
+cálculo de idade e previsão de término, classificação do convênio e o texto
+de cada página do prontuário. O texto é escrito em blocos (documentos.py),
+que viram o arquivo .docx e a página para ver/imprimir no navegador — com o
+mesmo timbre dos demais documentos e sem arquivo de modelo guardado em pasta.
+
+Este módulo não sabe nada de Flask nem de banco: recebe um dicionário
+no formato do formulário e devolve o documento. Por isso dá para usar
+tanto ao enviar o formulário quanto ao baixar de novo pela lista.
+"""
+
+import copy
+from itertools import accumulate
+from datetime import date
+
+import catalogo
+from documentos import Assinaturas, Celula, Coluna, Documento, Formulario, N, Paragrafo, Pauta, S, Tabela, para_docx
+from identidade import atual as identidade
+from validacao import fmt_cpf, fmt_rg
+
+MESES_DURACAO = 9  # período de tratamento citado na Declaração de Punho
+
+MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+         "agosto", "setembro", "outubro", "novembro", "dezembro"]
+
+# Linhas da tabela "Relação de Documentos" (chave do formulário -> rótulo)
+DOCUMENTOS = {
+    "rg": "RG Original/Cópia",
+    "cnh": "CNH Original",
+    "cin": "CIN Original/Cópia",
+    "sus": "Cartão SUS",
+    "ctps": "Carteira de Trabalho",
+}
+
+# Os convênios (nome, vagas, cor, se a contribuição é sempre R$ 0,00) vêm do cadastro: veja catalogo.py.
+# Só triagens (em admissão / lista de espera) podem ficar sem convênio definido
+CONVENIO_A_DEFINIR = "A definir"
+
+# Categoria do particular pelo valor: a primeira faixa cujo limite o valor passa.
+# Ordem do maior para o menor limite — por isso a primeira que bate é a certa.
+# (limite, inclusivo, nome): "acima de" o limite (valor > limite) ou, com inclusivo, "a partir de" o limite (valor >= limite).
+# Decisão do usuário (2026-11-17): o Social vai até R$ 399,99 e o Social I começa em R$ 400,00; as demais faixas seguem "acima de".
+FAIXAS_PARTICULAR = [
+    (1500.00, False, "Particular"),
+    (700.00, False, "Social Parcial II"),
+    (400.00, True, "Social Parcial I"),
+    (0.00, False, "Social Total"),
+]
+CATEGORIA_VALOR_ZERO = "Social"  # particular com valor = 0,00
+# Nome curto das categorias nas telas (o Word usa o nome completo): Social Total e valor 0,00 são "Social"
+NOME_CURTO = {"Social Total": "Social", CATEGORIA_VALOR_ZERO: "Social",
+              "Social Parcial I": "Social I", "Social Parcial II": "Social II"}
+# O nome do convênio nas telas (o valor guardado no banco e o Word continuam "CAPS AD") e a cor de cada
+# categoria também vêm do cadastro (catalogo.py).
+
+
+# ---------------------------------------------------------------- utilidades
+def ler_data(texto):
+    """'2026-10-05' (formato do <input type=date>) -> date, ou None."""
+    try:
+        return date.fromisoformat(texto) if texto else None
+    except ValueError:
+        return None
+
+
+def fmt_data(d):
+    return d.strftime("%d/%m/%Y") if d else ""
+
+
+def data_por_extenso(d):
+    return f"{d.day:02d} de {MESES[d.month - 1]} de {d.year}"
+
+
+def somar_meses(d, meses):
+    """Soma meses a uma data; se o dia não existir no mês final, usa o último dia."""
+    ano = d.year + (d.month - 1 + meses) // 12
+    mes = (d.month - 1 + meses) % 12 + 1
+    for dia in (d.day, 30, 29, 28):
+        try:
+            return date(ano, mes, dia)
+        except ValueError:
+            continue
+
+
+def calcular_idade(nascimento, referencia):
+    """Idade em anos completos na data de referência, ou None sem nascimento."""
+    if not nascimento:
+        return None
+    anos = referencia.year - nascimento.year
+    if (referencia.month, referencia.day) < (nascimento.month, nascimento.day):
+        anos -= 1
+    return anos
+
+
+def previsao_termino(inicio, tratamento_ate):
+    """Data informada no formulário ou, se vazia, início + 9 meses."""
+    if tratamento_ate:
+        return tratamento_ate
+    return somar_meses(inicio, MESES_DURACAO) if inicio else None
+
+
+def ler_valor(texto):
+    """'1200.5' (formato do <input type=number>) -> 1200.5; vazio/inválido -> 0.0."""
+    try:
+        return float(texto) if texto else 0.0
+    except ValueError:
+        return 0.0
+
+
+def fmt_reais(valor):
+    """1200.5 -> 'R$ 1.200,50'."""
+    return "R$ " + f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def classificar(convenio, valor):
+    """
+    Regra da contribuição:
+      - convênio gratuito (CAPS AD, Prefeitura e os que forem cadastrados) -> valor 0,00
+        (categoria = o próprio convênio)
+      - Particular -> categoria pela faixa de valor (FAIXAS_PARTICULAR);
+                      valor = 0,00 -> CATEGORIA_VALOR_ZERO
+      - qualquer outro (ex.: registro importado sem convênio) -> "A definir"
+    Devolve (valor_final, texto_da_linha_convenio).
+    """
+    cadastro = catalogo.atual()
+    if cadastro.e_gratuito(convenio):
+        return 0.0, convenio
+    if not cadastro.existe(convenio):
+        return valor, CONVENIO_A_DEFINIR
+    categoria = categoria_particular(valor)
+    if categoria == convenio:  # evita "Particular — Particular"
+        return valor, convenio
+    return valor, f"{convenio} — {categoria}"
+
+
+def categoria_particular(valor):
+    """Categoria do particular pela faixa de valor (valor 0,00 -> CATEGORIA_VALOR_ZERO)."""
+    for limite, inclusivo, nome in FAIXAS_PARTICULAR:
+        if valor >= limite if inclusivo else valor > limite:
+            return nome
+    return CATEGORIA_VALOR_ZERO
+
+
+def faixas_do_particular():
+    """As faixas de FAIXAS_PARTICULAR para mostrar na tela, da menor contribuição para a maior:
+    [(categoria como aparece nas telas, valor em texto)] — 'até R$ 399,99', 'de R$ 400,00 até R$ 700,00',
+    'acima de R$ 700,00 até R$ 1.500,00', 'acima de R$ 1.500,00'. A faixa de baixo também vale para o valor 0,00
+    (CATEGORIA_VALOR_ZERO é a mesma categoria)."""
+    faixas = sorted(FAIXAS_PARTICULAR)
+    resultado = []
+    for i, (minimo, inclusivo, nome) in enumerate(faixas):
+        proxima = faixas[i + 1] if i + 1 < len(faixas) else None
+        # o maior valor desta faixa: o limite da próxima, se ela é "acima de" (o próprio limite ainda é desta); R$ 0,01 a menos, se ela é "a partir de"
+        maximo = None if proxima is None else round(proxima[0] - 0.01, 2) if proxima[1] else proxima[0]
+        if minimo <= 0:
+            texto = f"até {fmt_reais(maximo)}" if maximo is not None else "qualquer valor"
+        elif maximo is None:
+            texto = f"a partir de {fmt_reais(minimo)}" if inclusivo else f"acima de {fmt_reais(minimo)}"
+        else:
+            texto = f"de {fmt_reais(minimo)} até {fmt_reais(maximo)}" if inclusivo else f"acima de {fmt_reais(minimo)} até {fmt_reais(maximo)}"
+        resultado.append((NOME_CURTO.get(nome, nome), texto))
+    return resultado
+
+
+def categoria_efetiva(convenio, valor):
+    """A categoria que a pessoa realmente é para a casa, como aparece nas telas:
+         Caps AD, Prefeitura, Social, Social I, Social II ou Particular
+    (quem paga valor é "Particular" só na faixa mais alta; as faixas menores são Social).
+    Sem convênio definido: "A definir". O documento Word segue com o texto completo
+    de classificar() ("Particular — Social Parcial II")."""
+    cadastro = catalogo.atual()
+    if cadastro.e_gratuito(convenio):
+        return cadastro.nome_na_tela(convenio)
+    if not cadastro.existe(convenio):
+        return CONVENIO_A_DEFINIR
+    categoria = categoria_particular(valor)
+    return NOME_CURTO.get(categoria, categoria)
+
+
+def tipo_da_categoria(categoria):
+    """Classe de cor da categoria (a do convênio, social, social-1, social-2, particular) ou "outro"."""
+    return catalogo.atual().tipo_da_categoria(categoria)
+
+
+def categoria_vaga(convenio, valor):
+    """Categoria em que a pessoa ocupa vaga (a mesma categoria efetiva). Sem convênio
+    definido não ocupa vaga de nenhuma categoria -> None."""
+    return categoria_efetiva(convenio, valor) if catalogo.atual().existe(convenio) else None
+
+
+def marca(escolhido, opcao):
+    """( X ) na opção escolhida, (   ) nas outras."""
+    return " X " if escolhido == opcao else "   "
+
+
+# ------------------------------------------------------- formulário -> variáveis do documento
+def montar_contexto(f):
+    """Transforma os dados do formulário nas variáveis que o documento usa."""
+    hoje = date.today()
+    inicio = ler_data(f.get("inicio"))
+    termino = ler_data(f.get("termino"))
+    nascimento = ler_data(f.get("nascimento"))
+    data_doc = ler_data(f.get("data_documento")) or hoje
+
+    tratamento_ate = previsao_termino(inicio, ler_data(f.get("tratamento_ate")))
+
+    valor, convenio_txt = classificar(f.get("convenio", ""),
+                                      ler_valor(f.get("contribuicao_valor", "").strip()))
+    contribuicao = fmt_reais(valor)
+    condicoes = f.get("contribuicao_condicoes", "").strip()
+    if condicoes and valor > 0:
+        contribuicao = f"{contribuicao} — {condicoes}"
+
+    docs = {chave: f.get(f"doc_{chave}", "") for chave in DOCUMENTOS}
+    doc_outro = f.get("doc_outro", "").strip()
+    docs["outro"] = "Sim" if doc_outro else ""
+
+    idade = calcular_idade(nascimento, inicio or hoje)
+
+    texto = lambda campo: f.get(campo, "").strip()
+
+    return {
+        # acolhido
+        "nome": texto("nome"),
+        "endereco": texto("endereco"),
+        "numero": texto("numero"),
+        "bairro": texto("bairro"),
+        "cidade": "/".join(p for p in (texto("cidade"), texto("estado")) if p),
+        "contato1": texto("contato1"),
+        "contato2": texto("contato2"),
+        "contato3": texto("contato3"),
+        "nascimento_fmt": fmt_data(nascimento),
+        "idade": f"{idade} anos" if idade is not None else "",
+        "rg": fmt_rg(texto("rg")),
+        "cpf": fmt_cpf(texto("cpf")),
+        "cartao_sus": texto("cartao_sus"),
+        "estado_civil": texto("estado_civil"),
+        "estado_civil_outro": f": {texto('estado_civil_outro')}"
+                              if texto("estado_civil") == "Outros" and texto("estado_civil_outro") else "",
+        "conjuge": texto("conjuge"),
+        "escolaridade": texto("escolaridade"),
+        "religiao": texto("religiao"),
+        "profissao": texto("profissao"),
+        "mae": texto("mae"),
+        # responsável
+        "resp_nome": texto("resp_nome"),
+        "parentesco": texto("parentesco"),
+        "resp_rg": fmt_rg(texto("resp_rg")),
+        "resp_cpf": fmt_cpf(texto("resp_cpf")),
+        # internação
+        "inicio_fmt": fmt_data(inicio),
+        "termino_fmt": fmt_data(termino),
+        "motivo": texto("motivo"),
+        "tratamento_ate_fmt": fmt_data(tratamento_ate),
+        "data_extenso": data_por_extenso(data_doc),
+        # contribuição e documentos
+        "contribuicao": contribuicao,
+        "convenio_txt": convenio_txt,
+        "docs": docs,
+        "doc_outro": doc_outro,
+    }
+
+
+# ------------------------------------------------------- o documento
+# As páginas do prontuário, na ordem: capa, ficha de controle, contrato terapêutico, termo de contribuição e
+# relação de documentos, termos de compromisso e declaração de próprio punho. Cada uma começa em página nova.
+LINHA = 14              # espaço de uma linha em branco de 12 pt, em pontos
+LINHA_E_MEIA = 21       # idem, com entrelinha 1,5
+
+# ficha de controle: a grade fina de 16 colunas e a altura mínima de cada linha, em twips (como no modelo antigo)
+GRADE_FICHA = [1359, 361, 290, 537, 769, 1123, 735, 164, 850, 322, 109, 1004, 119, 325, 750, 1153]
+ALTURAS_FICHA = [376, 376, 376, 89, 285, 376, 376, 393, 614, 376, 376, 376, 376, 376, 376]
+# A linha dos três contatos não cabia na grade do modelo antigo: "(18) 99999-9999" (Arial 12) pede ~2.000 twips e "Contato" (negrito) ~1.130, e as células dali tinham 1.596 e 1.123, então o
+# telefone e a palavra "Contato" quebravam ("Contat/o"). A grade ganha três divisões novas (em twips, contados da borda esquerda), só para essa linha: as outras linhas continuam com as divisões
+# de sempre (cada uma só ganha colunas a mais por baixo das mesmas bordas). Rótulos ficam com ~1.200 e telefones com ~2.100 (nenhum telefone de 15 caracteres quebra).
+CORTES_DOS_CONTATOS = (1220, 4520, 7819)
+# Outros rótulos que no modelo antigo cabiam por 10 a 40 twips e quebravam na prévia da tela por arredondamento ("Nu/m", "Escolaridad/e"; Responsável e Data de Nascimento estavam na mesma beira).
+# Cada borda abaixo anda um pouco, em TODAS as linhas que a têm (as bordas que eram alinhadas continuam alinhadas): a coluna dos rótulos de 1.720 passa a 1.900 (Escolaridade e Responsável ganham
+# ~11%), a de "Data de Nascimento" de 2.547 a 2.680 e o começo do "Num" de 8.067 a 7.950 (o rótulo vai de 750 a ~870).
+AJUSTES_DAS_BORDAS = {1720: 1900, 2547: 2680, 8067: 7950}
+CORTES_DA_FICHA = CORTES_DOS_CONTATOS + tuple(AJUSTES_DAS_BORDAS.values())
+
+
+def _com_cortes(grade, cortes):
+    """(grade nova, onde cada coluna nova termina): a grade com as colunas partidas nos `cortes`. Quem já cai numa divisão existente não parte nada."""
+    fins = sorted(set(accumulate(grade)) | set(cortes))
+    return [b - a for a, b in zip([0] + fins[:-1], fins)], fins
+
+
+def _reespaciar(linha, grade, fins, ajustes=None):
+    """A linha (células com span na `grade` antiga) com os spans na grade nova: as bordas das células ficam onde estavam (ou vão para onde `ajustes` manda: {borda antiga: borda nova}),
+    só muda quantas colunas finas cada célula cobre."""
+    ajustes = ajustes or {}
+    saida, coluna, inicio = [], 0, 0
+    for celula in linha:
+        fim = inicio + sum(grade[coluna:coluna + celula.span])
+        de, ate = ajustes.get(inicio, inicio), ajustes.get(fim, fim)
+        saida.append(Celula(celula.texto, sum(1 for f in fins if de < f <= ate), celula.negrito))
+        coluna, inicio = coluna + celula.span, fim
+    return saida
+
+
+def _celulas_ate(fins, celulas):
+    """Células dadas como (célula, onde ela termina, em twips): os spans saem da grade nova."""
+    saida, inicio = [], 0
+    for celula, ate in celulas:
+        saida.append(Celula(celula.texto, sum(1 for f in fins if inicio < f <= ate), celula.negrito))
+        inicio = ate
+    return saida
+
+
+def _ficha_de_controle(c):
+    r = lambda texto, span=1: Celula(texto, span, negrito=True)      # rótulo
+    v = lambda texto, span=1: Celula(texto, span)                    # valor
+    estado_civil = "        ".join(f"({marca(c['estado_civil'], opcao)}) {opcao}"
+                                   for opcao in ("Casado", "Solteiro", "Divorciado", "Outros")) + f" {c['estado_civil_outro']}"
+    grade, fins = _com_cortes(GRADE_FICHA, CORTES_DA_FICHA)
+    linhas = [
+        [r("Nome", 2), v(c["nome"], 14)],
+        [r("Endereço", 2), v(c["endereco"], 12), r("Num"), v(c["numero"])],
+        [r("Bairro", 2), v(c["bairro"], 5), r("Cidade", 3), v(c["cidade"], 6)],
+        None,                                                    # os contatos: veja CORTES_DOS_CONTATOS
+        [r("Data de Nascimento", 4), v(c["nascimento_fmt"], 8), r("Idade", 3), v(c["idade"])],
+        [r("RG"), v(c["rg"], 6), r("CPF", 2), v(c["cpf"], 7)],
+        [r("Cartão SUS", 3), v(c["cartao_sus"], 13)],
+        [r("Estado Civil", 2), v(estado_civil, 14)],
+        [r("Cônjuge", 2), v(c["conjuge"], 14)],
+        [r("Escolaridade", 2), v(c["escolaridade"], 6), r("Religião", 3), v(c["religiao"], 5)],
+        [r("Profissão", 2), v(c["profissao"], 14)],
+        [r("Mãe", 2), v(c["mae"], 14)],
+        [r("Responsável", 2), v(c["resp_nome"], 14)],
+        [r("Parentesco", 2), v(c["parentesco"], 14)],
+        [r("RG"), v(c["resp_rg"], 6), r("CPF", 2), v(c["resp_cpf"], 7)],
+    ]
+    contatos = [(r("Contato"), 1220), (v(c["contato1"]), 3316), (r("Contato"), 4520), (v(c["contato2"]), 6619), (r("Contato"), 7819), (v(c["contato3"]), sum(GRADE_FICHA))]
+    linhas = [_celulas_ate(fins, contatos) if linha is None else _reespaciar(linha, GRADE_FICHA, fins, AJUSTES_DAS_BORDAS) for linha in linhas]
+    return Formulario(grade, linhas, ALTURAS_FICHA)
+
+
+def _item(numero, partes, recuo, tamanho=None, antes=0, depois=0):
+    """Item de lista numerada: número pendurado à esquerda e texto justificado."""
+    return Paragrafo(partes if isinstance(partes, list) else [partes], "justificado", antes=antes, depois=depois,
+                     recuo=recuo, suspenso=360, numero=f"{numero}.", tamanho=tamanho)
+
+
+def _em_duas_vias(paginas):
+    """A mesma página (ou páginas) duas vezes, uma atrás da outra, para sair já em duas vias na impressora (no Word e no navegador). A segunda é uma
+    cópia fiel: sem "2ª via" escrito nem nada que desloque o texto e empurre a página para uma terceira folha."""
+    return paginas + copy.deepcopy(paginas)
+
+
+def _blocos_do_prontuario(c):
+    """O prontuário inteiro, como lista de blocos (documentos.py). `c` é o contexto de montar_contexto()."""
+    centro, justificado = "centro", "justificado"
+    casa = identidade()                                             # nome, cidade e os textos da instituição (identidade.py)
+    data = f"{casa.cidade}, {c['data_extenso']}."
+    linha_55 = "_" * 55
+    resp_e_nome = (f"Eu, {c['resp_nome']}, CPF: {c['resp_cpf']}, RG: {c['resp_rg']}, responsável pela internação de {c['nome']}, "
+                   f"CPF: {c['cpf']}, RG: {c['rg']}.")
+
+    capa = [Paragrafo([N("Prontuário")], centro, antes=205, tamanho=28, fonte="Times New Roman"),
+            Paragrafo([c["nome"]], centro, tamanho=24, fonte="Calibri")]
+
+    ficha = [Paragrafo([S("FICHA DE CONTROLE")], centro, entrelinha=1.5, quebra_antes=True, antes=LINHA),
+             Paragrafo([S("1º CONTATO")], centro, entrelinha=1.5),
+             _ficha_de_controle(c),
+             Paragrafo([S(f"Início: {c['inicio_fmt']}")], entrelinha=1.5, recuo=227, antes=LINHA_E_MEIA),
+             Paragrafo([S(f"Término: {c['termino_fmt']}")], entrelinha=1.5, recuo=227),
+             Paragrafo([S("Motivo: " + " ".join(f"({marca(c['motivo'], m)}) {m}" for m in ("Conclusão", "Desistência", "Desligamento")))],
+                       entrelinha=1.5, recuo=227)]
+
+    contrato = [
+        Paragrafo([S("CONTRATO TERAPÊUTICO ")], centro, tamanho=11, entrelinha=1.5, quebra_antes=True),
+        Paragrafo([f"Eu, {c['resp_nome']}, CPF {c['resp_cpf']}, RG: {c['resp_rg']}, Responsável pela internação de {c['nome']}, CPF: {c['cpf']}, "
+                   f"RG: {c['rg']}, Venho de comum acordo com a Coordenação e a Direção Administrativa desta Comunidade Terapêutica "
+                   "estabelecer o seguinte CONTRATO TERAPÊUTICO."], justificado, tamanho=11, depois=3),
+        _item(1, "A Casa de Recuperação se responsabiliza em oferecer ao paciente um tratamento humanitário respeitando sua individualidade "
+                 "segundo orientação e normas das Organizações competentes, preceitos éticos, assistência médica emergencial e "
+                 "interdisciplinar para o mesmo...", 780, 11, antes=LINHA),
+        _item(2, casa.texto("contrato_familia"), 780, 11),
+        _item(3, casa.partes("contrato_tripe"), 780, 11),
+        _item(4, "Todo e qualquer objeto destinado ao paciente deverá ser entregue a supervisão que o encaminhará ao paciente;", 780, 11),
+        _item(5, "Os familiares ou responsáveis deverão se responsabilizar pelo paciente após o tratamento.", 780, 11),
+        _item(6, "O pagamento da primeira parcela deverá ser realizado no ato da internação.", 780, 11),
+        _item(7, "Em caso de desistência ou exclusão antes do término do primeiro mês, o valor pago no ato da internação, não será devolvido. "
+                 f"O tratamento será mantido até {c['tratamento_ate_fmt']}.", 780, 11),
+        Paragrafo([N("Compete ao Responsável e familiares:")], justificado, tamanho=11, recuo=420, antes=LINHA),
+        _item(1, [N("Prover o paciente de roupas e objetos de uso pessoal e medicamentos (quando a internação não for por convênio) "
+                    "quando necessário;")], 720, 11, antes=LINHA),
+        _item(2, [N("Manifestar à Coordenação as dúvidas que tenha com relação ao tratamento;")], 720, 11),
+        _item(3, [N("Comparecer à Casa de Recuperação quando solicitado e quando do retorno de saída do paciente;")], 720, 11),
+        _item(4, casa.partes("grupos_de_ajuda"), 720, 11),
+        _item(5, [N("Responsabilizar-se por danos ao patrimônio provocado pelo interno.")], 720, 11),
+        Paragrafo(["Nossa entidade é filantrópica e todo trabalho realizado pelo paciente é ", N("labor terapêutico"), ", portanto ", N("não"),
+                   " terá nenhum direito trabalhista sobre o mesmo;"], justificado, tamanho=11, primeira_linha=360, antes=LINHA),
+        Paragrafo(["A entidade pela sua própria condição, ", N("não"), " se responsabilizará por qualquer ato voluntário do paciente caso venha "
+                   "acidentar-se gerando lesão física de qualquer natureza, permanente ou temporária;"],
+                  justificado, tamanho=11, primeira_linha=360),
+        Paragrafo([data], centro, tamanho=11, antes=LINHA),
+        Paragrafo(["De Acordo: "], justificado, tamanho=11, primeira_linha=360, antes=LINHA + 7, unido_ao_proximo=True),
+        Paragrafo([linha_55], centro, tamanho=11, unido_ao_proximo=True),
+        Paragrafo(["Paciente"], centro, tamanho=11, unido_ao_proximo=True),
+        Paragrafo([linha_55], centro, tamanho=11, antes=LINHA + 7, unido_ao_proximo=True),
+        Paragrafo(["Responsável"], centro, tamanho=11),
+    ]
+
+    documentos_entregues = [[rotulo, c["docs"][chave]] for chave, rotulo in DOCUMENTOS.items()]
+    documentos_entregues.append([f"Outro: {c['doc_outro']}", c["docs"]["outro"]])
+    termo = [
+        Paragrafo([S("TERMO DE CONTRIBUIÇÃO VOLUNTÁRIA")], centro, tamanho=11, quebra_antes=True),
+        Paragrafo([f"Nome do Candidato: {c['nome']}"], justificado, antes=LINHA, depois=3),
+        Paragrafo([f"Nome do Responsável: {c['resp_nome']}"], entrelinha=1.5),
+        Paragrafo([f"Contribuição Voluntária:  {c['contribuicao']}"], entrelinha=1.5, antes=LINHA_E_MEIA),
+        Paragrafo(["Convênio: ", N(c["convenio_txt"])], entrelinha=1.5),
+        Paragrafo(["Solicitamos que o valor da parcela de entrada seja providenciado para o ", N("Dia da Internação, "),
+                   "para que possamos dar andamento ao processo."], justificado, antes=LINHA_E_MEIA),
+        Paragrafo(["Obs: Em caso de desistência ou desligamento, a contribuição ", N("não"),
+                   " será devolvida, constituindo doação para a instituição."], justificado, antes=LINHA),
+        Paragrafo([S("RELAÇÃO DE DOCUMENTOS")], centro, tamanho=11, antes=2 * LINHA),
+        Paragrafo([f"Eu, {c['resp_nome']}, declaro que entreguei os documentos relacionados abaixo, para ficar no prontuário da "
+                   f"{casa.apelido} durante o período de internação "], justificado),
+        Tabela(colunas=[Coluna("Documento ", 3892), Coluna("Apresentou", 1550)], linhas=documentos_entregues, tamanho=12,
+               sombreado=False, cor_borda="000000", altura_cabecalho=492, antes=LINHA + 7),
+        Paragrafo([data], centro, antes=LINHA + 7),
+        Assinaturas([casa.mantenedora, "Responsável"], comprimento=32, tamanho_rotulo=10, antes=LINHA_E_MEIA),
+    ]
+
+    compromisso = [
+        Paragrafo([S("TERMOS DE COMPROMISSO")], centro, tamanho=11, quebra_antes=True),
+        Paragrafo([resp_e_nome], justificado, antes=LINHA_E_MEIA + 2 * LINHA, depois=3),
+        _item(1, [N("Comprometo-me"), f" a comparecer na {casa.nome.upper()}/SEDE DO ESCRITÓRIO, para buscar o residente supracitado, "
+                  "no prazo de vinte e quatro horas após seu pedido de desistência ou seu desligamento. Caso contrário estou ciente e de acordo "
+                  "que o mesmo será liberado da instituição. Portando o valor da passagem (residentes de fora) e documentação entregue na "
+                  "internação."], 720, antes=LINHA, depois=3),
+        _item(2, casa.partes("compromisso_tripe"), 720, antes=2 * LINHA),
+        Paragrafo(["De Acordo: "], justificado, primeira_linha=360, antes=4 * LINHA, unido_ao_proximo=True),
+        Paragrafo(["Assinatura: " + "_" * 60], centro, antes=LINHA, unido_ao_proximo=True),
+        Paragrafo(["Responsável"], centro, unido_ao_proximo=True),
+        Paragrafo(["Assinatura: " + "_" * 60], centro, antes=2 * LINHA, unido_ao_proximo=True),
+        Paragrafo(["Paciente"], centro, unido_ao_proximo=True),
+        Paragrafo(["Assinatura: " + "_" * 60], centro, antes=2 * LINHA, unido_ao_proximo=True),
+        Paragrafo(["Assistente Social"], centro, unido_ao_proximo=True),
+        Paragrafo([data], centro, antes=LINHA_E_MEIA + 2 * LINHA),
+    ]
+
+    punho = [
+        Paragrafo([N("Declaração Punho")], centro, tamanho=18, quebra_antes=True, antes=LINHA),
+        Paragrafo([N("O residente deverá copiar e assinar")], centro),
+        Paragrafo([casa.texto("declaracao_punho", interno=c["nome"], casa=casa.nome)], justificado, antes=3 * LINHA),
+        Pauta(linhas=16, altura=19, antes=2 * LINHA),
+        Paragrafo(["Residente: " + "_" * 32 + " "], centro, antes=2 * LINHA, unido_ao_proximo=True),
+        Paragrafo([data], centro, antes=LINHA),
+    ]
+    # Saem em DUAS VIAS a ficha de controle (página 2) e o termo de contribuição voluntária com a relação de documentos (página 4): uma fica na
+    # casa e a outra com quem assina. O prontuário completo tem, então, 8 folhas: capa, ficha x2, contrato, termo x2, compromisso e punho.
+    return capa + _em_duas_vias(ficha) + contrato + _em_duas_vias(termo) + compromisso + punho
+
+
+def montar_documento(dados):
+    """dados (formato do formulário) -> Documento (documentos.py), que vira Word ou página do navegador."""
+    contexto = montar_contexto(dados)
+    nome = f"Prontuário - {contexto['nome'] or 'sem nome'}"
+    return Documento(nome_arquivo=nome, titulo=nome, blocos=_blocos_do_prontuario(contexto), fonte="Arial", tamanho=12,
+                     margem_lateral=720)
+
+
+def gerar_docx(dados):
+    """dados (formato do formulário) -> (BytesIO com o .docx, nome do arquivo)."""
+    documento = montar_documento(dados)
+    return para_docx(documento), documento.nome_arquivo + ".docx"

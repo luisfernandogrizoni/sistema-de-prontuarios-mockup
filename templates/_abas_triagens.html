@@ -1,0 +1,9 @@
+{# As duas telas de quem ainda não foi internado: a lista de triagens e a lista de espera (fila.py). `atual` = 'triagens' ou 'fila'; `na_fila` = quantos esperam vaga. #}
+{% macro abas(atual, na_fila) -%}
+<div class="ferramentas">
+  <div class="segmentado" role="group" aria-label="Triagens e lista de espera">
+    <a href="{{ url_for('lista_triagens') }}" class="{{ 'ativo' if atual == 'triagens' }}"><svg class="icone"><use href="#i-prancheta"/></svg>Triagens</a>
+    <a href="{{ url_for('pagina_fila') }}" class="{{ 'ativo' if atual == 'fila' }}"><svg class="icone"><use href="#i-relogio"/></svg>Lista de espera<span class="n">{{ na_fila }}</span></a>
+  </div>
+</div>
+{%- endmacro %}

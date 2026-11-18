@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import linha_voltar with context %}
+{% from "_abas_triagens.html" import abas %}
+
+{% block titulo %}Triagens{% endblock %}
+
+{% block estilo %}
+    @media print { @page { size: A4 landscape; margin: 10mm; } }
+    .ficha-social { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+    .ficha-social a { font-size: .74rem; font-weight: 600; padding: 2px 10px; border-radius: 999px; text-decoration: none; background: #fff;
+                      border: 1px solid var(--borda-forte); color: var(--suave); }
+    .ficha-social a:hover { border-color: var(--vermelho); color: var(--vermelho); }
+    .ficha-social a.pede { background: var(--vermelho-claro); border-color: #f0b4b0; color: var(--vermelho); }
+    .ficha-social a.rascunho { background: var(--amarelo); border-color: #ecd98a; color: var(--ambar); }
+    .ficha-social a.finalizado { background: var(--verde-claro); border-color: var(--verde-borda); color: var(--verde); }
+    .acoes-linha { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+    @media (max-width: 1279px) { .acoes-linha { justify-content: stretch; } .acoes-linha > * { flex: 1 1 0; } .acoes-linha .botao { width: 100%; justify-content: center; } }
+{% endblock %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('home')) }}
+  <div class="pagina-topo">
+    <div class="titulo"><h1>Triagens</h1></div>
+  </div>
+  {{ abas('triagens', na_fila) }}
+
+  <div class="ferramentas">
+    <div class="segmentado" id="filtro" data-mais-abas role="group" aria-label="Situação">
+      <button type="button" data-valor="andamento">Em andamento <span class="n" id="n-andamento">–</span></button>
+      <button type="button" data-valor="em_admissao">Em admissão <span class="n" id="n-em_admissao">–</span></button>
+      <button type="button" data-valor="desistiu">Desistências <span class="n" id="n-desistiu">–</span></button>
+      <button type="button" data-valor="rejeitado">Rejeitados <span class="n" id="n-rejeitado">–</span></button>
+      <button type="button" data-valor="">Todas <span class="n" id="n-todas">–</span></button>
+    </div>
+    <label class="busca">
+      <svg class="icone"><use href="#i-busca"/></svg>
+      <input id="busca" type="search" placeholder="Buscar por nome, CPF, responsável ou categoria…" aria-label="Buscar">
+    </label>
+  </div>
+
+  {% with msgs = get_flashed_messages() %}
+    {% if msgs %}<ul class="mensagens">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+  {% endwith %}
+  <div id="aviso" class="aviso" hidden></div>
+
+  <div class="moldura">
+    <table class="lista">
+      <thead>
+        <tr>
+          <th data-chave="nome">Pessoa</th>
+          <th data-chave="categoria">Categoria</th>
+          <th data-chave="primeiro_contato">1º contato</th>
+          <th data-chave="triagem">Triagem</th>
+          <th data-chave="agendada">Agendada</th>
+          <th data-chave="responsavel">Responsável</th>
+          <th data-chave="status">Situação</th>
+          <th class="sem-ordem"></th>
+        </tr>
+      </thead>
+      <tbody id="linhas"></tbody>
+    </table>
+    <div id="vazio" class="vazio" hidden></div>
+  </div>
+  <p class="rodape"><span id="mostrando"></span><span class="ponto">·</span><span id="atualizado"></span></p>
+</main>
+
+<!-- janela que aparece ao escolher "Admitido" -->
+<dialog id="admitir">
+  <form method="dialog" id="form-admitir">
+    <h2>Admitir <span id="admitir-nome"></span></h2>
+    <div class="grade">
+      <label class="c3">Internado em *<input type="date" name="inicio" required></label>
+      <label class="c3">Horário<input type="time" name="hora_internacao"></label>
+      <label class="c3" id="campo-convenio">Convênio *
+        <select name="convenio">
+          <option value="">—</option>
+          {% for valor, rotulo in convenios %}<option value="{{ valor }}">{{ rotulo }}</option>{% endfor %}
+        </select></label>
+      <label class="c3">Valor (R$)<input type="number" step="0.01" min="0" name="contribuicao_valor"></label>
+    </div>
+    <p class="erro" id="admitir-erro"></p>
+    <div class="botoes">
+      <button class="botao secundario" value="cancelar" formnovalidate>Cancelar</button>
+      <button class="botao" value="confirmar">Admitir</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- janela que aparece ao marcar a data da internação -->
+<dialog id="imprimir-triagem">
+  <form method="dialog">
+    <h2>Imprimir exames e enxoval?</h2>
+    <p><strong id="imprimir-nome"></strong> — internação marcada para <strong id="imprimir-data"></strong>.</p>
+    <div class="botoes">
+      <button class="botao secundario" value="depois">Agora não</button>
+      <a class="botao" id="imprimir-link" href="#" target="_blank" rel="noopener"><svg class="icone"><use href="#i-impressora"/></svg>Imprimir</a>
+    </div>
+  </form>
+</dialog>
+
+<script src="{{ url_for('static', filename='tabela.js') }}"></script>
+<script nonce="{{ csp_nonce() }}">
+  const NOVO = {{ novo | tojson }};
+  const IMPRIMIR = {{ imprimir | tojson }};     // 1 = a internação acabou de ser marcada: pergunta se imprime exames e enxoval
+  const PODE_SOCIAL = {{ pode_servico_social | tojson }};     // lê e escreve o acolhimento social (Serviço Social e administrador)
+  const PODE = {{ permissoes_js() | tojson }};     // o que o nível de acesso da pessoa permite (permissoes.py): o resto não aparece
+  const OPCOES = [...{{ status_triagem | tojson }}, ["ativo", "Admitido → internos"]];
+  const filtro = new ControleSegmentado(document.getElementById("filtro"));
+  const aviso = document.getElementById("aviso");
+
+  function mostrarAviso(partes, erro = false) {
+    aviso.className = "aviso" + (erro ? " erro" : "");
+    aviso.replaceChildren(...partes);
+    aviso.hidden = false;
+  }
+
+  async function enviarStatus(item, dados) {
+    const r = await fetch(`/triagens/${item.id}/status`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(dados),
+    });
+    return [r.ok, await r.json()];
+  }
+
+  // pergunta data de internação (e convênio, se ainda "A definir") antes de admitir
+  function perguntarAdmissao(item) {
+    const dialogo = document.getElementById("admitir");
+    const form = document.getElementById("form-admitir");
+    form.reset();
+    document.getElementById("admitir-nome").textContent = item.nome;
+    document.getElementById("admitir-erro").textContent = "";
+    // sugestão: a data agendada (se houver); quem confirma é a pessoa
+    form.inicio.value = item.agendada || new Date().toISOString().slice(0, 10);
+    form.hora_internacao.value = item.hora_agendada || "";
+    document.getElementById("campo-convenio").hidden = item.convenio_definido;
+    form.convenio.required = !item.convenio_definido;
+    dialogo.showModal();
+    return new Promise(resolve => {
+      dialogo.addEventListener("close", () => {
+        resolve(dialogo.returnValue === "confirmar" ? Object.fromEntries(new FormData(form)) : null);
+      }, { once: true });
+    });
+  }
+
+  // internação marcada: oferece imprimir o pedido de exames e o enxoval (também ficam na página inicial e na ficha)
+  function perguntarImpressao(item) {
+    const dialogo = document.getElementById("imprimir-triagem");
+    const ancora = document.getElementById("imprimir-link");
+    document.getElementById("imprimir-nome").textContent = item.nome;
+    document.getElementById("imprimir-data").textContent = item.agendada_fmt;
+    ancora.href = `/internacoes/${item.id}?itens=exames,enxoval&imprimir=1#aba-imprimir`;
+    ancora.onclick = () => setTimeout(() => dialogo.close(), 0);
+    dialogo.showModal();
+  }
+
+  // "09/10/2026 14:30 · Presencial" -> data e hora e, embaixo, a modalidade
+  function celulaTriagem(i) {
+    const [quando, modalidade] = String(i.triagem_fmt || "").split(" · ");
+    if (!quando && !modalidade) return "";           // sem triagem marcada: a célula fica vazia (some no cartão do celular)
+    const caixa = document.createElement("div");
+    caixa.append(quando || "");
+    if (modalidade) caixa.append(texto("span", modalidade, "sub"));
+    return caixa;
+  }
+
+  // desistência e rejeição saem de "em andamento": a triagem delas já terminou
+  const emAndamento = i => i.status !== "desistiu" && i.status !== "rejeitado";
+
+  // acolhimento social (só a assistente social e o administrador abrem): embaixo do nome, o atalho da ficha, que mostra em que
+  // pé está (não iniciado, rascunho ou finalizado) e a classificação de risco quando já foi feita. Fica vermelho enquanto falta
+  // finalizar numa triagem que já aconteceu ou numa rejeição sem parecer.
+  const RISCO = { Baixo: "ativo", "Médio": "lista_espera", Alto: "desistiu" };
+  function atalhoSocial(i) {
+    const finalizado = i.acolhimento === "finalizado";
+    const pede = !finalizado && (i.status === "rejeitado" || (emAndamento(i) && i.triagem && i.triagem <= hojeIso()));
+    const rotulo = finalizado ? "Ficha social ✓" : i.acolhimento === "rascunho" ? "Ficha social · rascunho" : "Ficha social";
+    const atalho = link(rotulo, `/internacoes/${i.id}/relatorio-social`, i.acolhimento === "rascunho" ? "rascunho" : finalizado ? "finalizado" : pede ? "pede" : "");
+    atalho.title = finalizado ? "Acolhimento social finalizado" : i.acolhimento === "rascunho" ? "Acolhimento social em andamento" : "Acolhimento social ainda não iniciado";
+    const caixa = document.createElement("div");
+    caixa.className = "ficha-social";
+    caixa.append(atalho);
+    if (i.classificacao) caixa.append(texto("span", `Risco ${i.classificacao.toLowerCase()}`, "selo " + RISCO[i.classificacao]));
+    return caixa;
+  }
+  function celulaPessoaTriagem(i) {
+    const caixa = celulaPessoa(i);
+    if (PODE_SOCIAL) caixa.lastElementChild.append(atalhoSocial(i));
+    return caixa;
+  }
+
+  // quem tem a internação marcada ganha Imprimir (exames e enxoval); Editar
+  function celulaAcoes(i) {
+    const caixa = document.createElement("div");
+    caixa.className = "acoes-linha";
+    if (PODE.documentos && i.agendada && i.agendada >= hojeIso() && (i.status === "em_admissao" || i.status === "lista_espera")) {
+      const imprimir = link("Imprimir", `/internacoes/${i.id}?itens=exames,enxoval&imprimir=1#aba-imprimir`, "botao pequeno secundario");
+      imprimir.target = "_blank"; imprimir.rel = "noopener"; imprimir.title = "Pedido de exames e enxoval";
+      imprimir.prepend(icone("impressora"));
+      caixa.append(imprimir);
+    }
+    if (PODE.triagem) caixa.append(link("Editar", `/internacoes/${i.id}/editar`, "botao pequeno secundario"));
+    return caixa;
+  }
+
+  function hojeIso() {                           // data de hoje NO FUSO LOCAL (toISOString usaria UTC)
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  function seletorStatus(item) {
+    // quem só admite (a enfermeira, do polo Saúde) escolhe entre a situação de agora e "Admitido"; quem mexe nas triagens escolhe qualquer situação
+    const soAdmite = !PODE.triagem && PODE.admitir && (item.status === "em_admissao" || item.status === "lista_espera");
+    if (!PODE.triagem && !soAdmite) return selo(item.status_txt, item.status);        // sem permissão para mudar a situação: só mostra
+    const sel = document.createElement("select");
+    sel.className = "seletor " + item.status;
+    const opcoes = soAdmite ? [[item.status, item.status_txt], ["ativo", "Admitido → internos"]] : OPCOES;
+    for (const [valor, rotulo] of opcoes) sel.add(new Option(rotulo, valor, false, valor === item.status));
+    sel.addEventListener("change", async () => {
+      let dados = { status: sel.value };
+      if (sel.value === "ativo") {
+        const extra = await perguntarAdmissao(item);
+        if (!extra) { sel.value = item.status; return; }       // cancelou
+        dados = { ...dados, ...extra };
+      }
+      const [ok, resp] = await enviarStatus(item, dados);
+      if (!ok) {
+        sel.value = item.status;
+        mostrarAviso([`Não foi possível mudar a situação de ${item.nome}: ${Object.values(resp.erros).join(" ")}`], true);
+        return;
+      }
+      if (resp.status === "ativo") {
+        mostrarAviso([`${item.nome} foi admitido e já está na lista de internos. `,
+                      link("Completar o prontuário", resp.editar), " · ", link("ver ficha", resp.ficha)]);
+      } else if (resp.status === "rejeitado") {
+        mostrarAviso([`${item.nome} foi marcado como rejeitado na triagem. `,
+                      ...(resp.acolhimento ? [link("Escrever o parecer da rejeição", resp.acolhimento), " · "] : ["A assistente social precisa escrever o parecer. "]),
+                      link("ver ficha", resp.ficha)]);
+      } else {
+        mostrarAviso([`Situação de ${item.nome} alterada para "${sel.selectedOptions[0].text}".`]);
+      }
+      sel.className = "seletor " + sel.value;
+      tabela.carregar();
+    });
+    return sel;
+  }
+
+  const tabela = new TabelaDinamica({
+    url: "{{ url_for('api_triagens') }}",
+    destacar: NOVO,
+    campos: { situacao: filtro },       // a situação escolhida fica na URL: o "voltar" a mantém
+    camposBusca: i => [i.nome, i.cpf, i.cpf.replace(/\D/g, ""), i.responsavel, i.categoria, i.status_txt],
+    filtro: i => filtro.value === "andamento" ? emAndamento(i) : (!filtro.value || i.status === filtro.value),
+    aoCarregar: itens => {
+      for (const s of ["em_admissao", "desistiu", "rejeitado"])
+        document.getElementById("n-" + s).textContent = itens.filter(i => i.status === s).length;
+      document.getElementById("n-andamento").textContent = itens.filter(emAndamento).length;
+      document.getElementById("n-todas").textContent = itens.length;
+    },
+    colunas: [
+      { celula: celulaPessoaTriagem },
+      { celula: i => chipCategoria(i.categoria, i.categoria_tipo), classe: "fixo" },
+      { celula: i => dataOuMudo(i.primeiro_contato_fmt), classe: "fixo" },
+      { celula: celulaTriagem, classe: "fixo" },
+      { celula: i => dataOuMudo(i.agendada_fmt), classe: "fixo" },
+      { celula: celulaResponsavel, classe: "livre" },
+      { celula: i => seletorStatus(i), classe: "fixo" },
+      { celula: celulaAcoes, classe: "fixo acao" },
+    ],
+  });
+
+  (async () => {
+    await tabela.carregar();
+    if (NOVO) {
+      const item = tabela.itens.find(i => i.id === NOVO);
+      if (item) {
+        if (!tabela.filtro(item)) { filtro.value = ""; tabela.desenhar(); }
+        mostrarAviso([`Triagem de ${item.nome} registrada.`]);
+        document.getElementById("linha-" + NOVO)?.scrollIntoView({ block: "center" });
+        if (IMPRIMIR && item.agendada) perguntarImpressao(item);
+      }
+      tabela.limparParametros("novo", "imprimir");   // F5 não repete o aviso nem a pergunta; o resto da URL fica
+    }
+  })();
+</script>
+{% endblock %}

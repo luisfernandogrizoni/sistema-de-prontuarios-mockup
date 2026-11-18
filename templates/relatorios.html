@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% from "_cartao.html" import cartao %}
+{% from "_voltar.html" import linha_voltar with context %}
+{#
+  Relatórios numa tela só, como a aba Imprimir da ficha: à esquerda a caixa que escolhe os relatórios (e, embaixo, as opções deles), à direita o preview das folhas.
+  O que está escolhido vai no endereço (?itens=...&nomes=...&colunas=...): static/impressao.js monta o endereço do preview e do Word a cada escolha (veja o alto dele).
+  Variáveis: itens (os relatórios que a pessoa pode pedir), marcados (as chaves escolhidas), chaves_ativos (os de internos ativos), tem_anual, anonimo, colunas, anos_do_detalhe,
+  grupos_* e padrao_* (informações das tabelas de gente), emissores/emissor_escolhido, ano_das_contribuicoes/anos_das_contribuicoes, mostrar_ativos, imprimir_ao_abrir.
+#}
+{% block titulo %}Relatórios{% endblock %}
+
+{% block estilo %}
+  /* a caixa e o preview são os da ficha (base.html); aqui só o que muda por não haver abas acima: o preview gruda logo abaixo do topo */
+  @media (min-width: 1001px) {
+    .impressao-lado .preview-impressao { top: calc(var(--topo-h, 60px) + 12px); }
+    iframe.quadro-impressao { height: calc(100vh - var(--topo-h, 60px) - 28px); }
+  }
+  .opcoes-caixa { display: grid; gap: 12px; }
+  .opcoes-caixa label.linha-opcao { display: flex; flex-direction: column; align-items: stretch; gap: 4px; font-size: .88rem; font-weight: 600; color: var(--suave); }
+  .opcoes-caixa label.linha-opcao select { width: 100%; max-width: 100%; min-width: 0; padding: 6px 9px; font-size: .88rem; text-overflow: ellipsis; }        /* nomes compridos ficam dentro da caixa */
+  .opcao-bloco { display: grid; gap: 10px; padding-top: 12px; border-top: 1px dashed var(--borda); }
+  .opcao-bloco[hidden] { display: none; }
+  .opcao-bloco .rotulo { margin: 0; color: var(--suave); font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .escolhas-em-grade { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .escolhas-em-grade label, .meses-detalhe label { padding: 6px 10px; border: 1px solid var(--borda-forte); border-radius: var(--r-md); font-size: .86rem; cursor: pointer; }
+  .escolhas-em-grade label:has(input:checked), .meses-detalhe label:has(input:checked) { border-color: var(--vermelho); background: #fdf2f2; }
+  .escolhas-em-grade input { width: auto; flex: none; margin: 0; }
+  details.opcional.interna { margin: 0; }
+  details.opcional.interna > summary { padding: 9px 12px; font-size: .9rem; }
+  details.opcional.interna[open] > summary { margin-bottom: 10px; }
+  .anos-detalhe { max-height: 320px; overflow-y: auto; display: grid; gap: 12px; }
+  .anos-detalhe fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+  .anos-detalhe legend { padding: 0; margin: 0 0 6px; }
+  .anos-detalhe legend label { display: inline-flex; flex-direction: row; align-items: center; gap: 8px; font-weight: 700; }
+  .meses-detalhe { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .meses-detalhe label { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 4px; }
+  .meses-detalhe label:has(input:disabled) { opacity: .45; cursor: default; }
+  .meses-detalhe input { width: auto; flex: none; margin: 0 6px 0 0; }
+  .meses-detalhe small { color: var(--suave); margin-left: auto; }
+  .grupo-informacoes legend { padding: 0; margin: 0 0 6px; font-weight: 700; font-size: .86rem; }
+  .grupo-informacoes fieldset { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+  .grupo-informacoes .voltar-padrao { justify-self: start; }
+{% endblock %}
+
+{% macro informacoes(nome, grupos, padrao, rotulo) %}
+  {# as informações das tabelas de gente: o que está no padrão do relatório já vem marcado; a escolha igual ao padrão não vai no endereço #}
+  {% set diferente = grupos | map(attribute='itens') | sum(start=[]) | selectattr('marcada') | map(attribute='chave') | sort | join(',') != (padrao.split(',') | sort | join(',')) %}
+  <details class="opcional interna"{{ ' open' if diferente }}>
+    <summary>{{ rotulo }}</summary>
+    <div class="grupo-informacoes" data-param-grupo="{{ nome }}" data-padrao="{{ padrao }}">
+      {% for grupo in grupos %}
+      <fieldset>
+        <legend>{{ grupo.titulo }}</legend>
+        <div class="escolhas-em-grade">
+          {% for x in grupo['itens'] %}<label class="caixa"><input type="checkbox" value="{{ x.chave }}"{{ ' checked' if x.marcada }}>{{ x.titulo }}</label>{% endfor %}
+        </div>
+      </fieldset>
+      {% endfor %}
+      <button type="button" class="botao secundario pequeno voltar-padrao" data-restaurar>Voltar ao padrão</button>
+    </div>
+  </details>
+{% endmacro %}
+
+{% block conteudo %}
+<main class="largo">
+  {{ linha_voltar(url_for('home')) }}
+  <div class="pagina-topo">
+    <div class="titulo">
+      <h1>Relatórios</h1>
+      <p class="ajuda">Posição em {{ hoje | data }}</p>
+    </div>
+  </div>
+
+  <div class="impressao-lado" id="relatorios" data-impressos data-ver="{{ url_for('ver_relatorios') }}" data-docx="{{ url_for('baixar_relatorios') }}" data-sincronizar data-carregar-ja{{ ' data-imprimir-ao-abrir' if imprimir_ao_abrir }}>
+    <div class="coluna-escolha">
+      {% call cartao('Relatórios para imprimir', 'impressora', 'azul') %}
+        {% if itens | length > 1 %}<div class="selecao-topo"><button type="button" class="botao secundario pequeno" data-marcar-todos aria-pressed="false">Selecionar tudo</button></div>{% endif %}
+        <ul class="lista-docs">
+          {% for i in itens %}
+          <li>
+            <label class="escolha caixa"><input type="checkbox" data-chave="{{ i.chave }}" aria-label="Mostrar e imprimir: {{ i.rotulo }}"{{ ' checked' if i.chave in marcados }}>
+              <span class="chip-doc" aria-hidden="true"><svg class="icone"><use href="#i-documento"/></svg></span>
+              <span><span class="nome-doc">{{ i.rotulo }}</span>{% if i.nota %}<small class="tipo">{{ i.nota }}</small>{% endif %}</span></label>
+            <div class="acoes-doc">
+              <details class="mais"><summary class="botao secundario pequeno" aria-label="Mais ações de {{ i.rotulo }}"><svg class="icone"><use href="#i-pontos"/></svg></summary>
+                <div class="menu-mais">
+                  <button type="button" data-so-este="{{ i.chave }}"><svg class="icone"><use href="#i-impressora"/></svg>Imprimir só este</button>
+                  <a href="{{ url_for('baixar_relatorios', itens=i.chave) }}" data-docx-item="{{ i.chave }}"><svg class="icone"><use href="#i-baixar"/></svg>Baixar Word</a>
+                </div></details>
+            </div>
+            {% if i.chave == 'contribuicoes' and anos_das_contribuicoes | length > 1 %}
+            <label class="linha-emissor" data-mostrar-com="contribuicoes"{{ ' hidden' if 'contribuicoes' not in marcados }}>Ano
+              <select data-param="ano" aria-label="Ano das contribuições">
+                {% for a in anos_das_contribuicoes %}<option value="{{ a }}"{{ ' selected' if a == ano_das_contribuicoes }}>{{ a }}</option>{% endfor %}
+              </select></label>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        <div class="barra-selecao" data-selecao hidden>
+          <span data-contagem>0 escolhidos</span>
+          <button type="button" class="botao" data-imprimir-escolhidos><svg class="icone"><use href="#i-impressora"/></svg>Imprimir os escolhidos</button>
+          <a class="botao secundario" data-baixar href="#"><svg class="icone"><use href="#i-baixar"/></svg>Baixar Word</a>
+        </div>
+      {% endcall %}
+
+      {% call cartao('Opções', 'ajustes', 'neutro') %}
+        <div class="opcoes-caixa">
+          <label class="escolha caixa"><input type="checkbox" data-param="nomes" data-valor-desmarcado="completos"{{ ' checked' if anonimo }}><span>Anonimizar (só iniciais)</span></label>
+          {% if emissores %}
+          <label class="linha-opcao">Quem assina
+            <select data-param="emissor" aria-label="Responsável pela emissão dos relatórios">
+              {% for fid, rotulo, sem_registro in emissores %}<option value="{{ fid }}"{{ ' selected' if fid == emissor_escolhido }}{{ ' disabled' if sem_registro and fid != emissor_escolhido }}>{{ rotulo }}</option>{% endfor %}
+            </select></label>
+          {% endif %}
+
+          {% if tem_anual %}
+          <div class="opcao-bloco" data-mostrar-com="anual"{{ ' hidden' if 'anual' not in marcados }}>
+            <p class="rotulo">Passaram pela casa</p>
+            {% if colunas %}
+            <div role="group" aria-label="Colunas por convênio">
+              <p class="rotulo" style="margin-bottom: 6px;">Colunas por convênio</p>
+              <div class="escolhas-em-grade" data-param-grupo="colunas" data-juntar=",">
+                {% for c in colunas %}<label class="caixa"><input type="checkbox" value="{{ c.slug }}"{{ ' checked' if c.marcada }}>{{ c.nome }}</label>{% endfor %}
+              </div>
+            </div>
+            {% endif %}
+            {% if anos_do_detalhe %}
+            {% set meses_marcados = anos_do_detalhe | map(attribute='meses') | sum(start=[]) | selectattr('marcado') | list | length %}
+            <details class="opcional interna"{{ ' open' if meses_marcados }}>
+              <summary>Detalhar internações{% if meses_marcados %} ({{ meses_marcados }} {{ 'mês' if meses_marcados == 1 else 'meses' }}){% endif %}</summary>
+              <div class="anos-detalhe" data-param-grupo="mes">
+                {% for a in anos_do_detalhe %}
+                <fieldset>
+                  <legend><label><input type="checkbox" data-marca-grupo>{{ a.ano }}</label></legend>
+                  <div class="meses-detalhe">
+                    {% for m in a.meses %}<label><span><input type="checkbox" value="{{ m.chave }}"{{ ' checked' if m.marcado }}{{ ' disabled' if not m.total }}>{{ m.nome }}</span><small>{{ m.total }}</small></label>{% endfor %}
+                  </div>
+                </fieldset>
+                {% endfor %}
+              </div>
+            </details>
+            {{ informacoes('camposmes', grupos_mes, padrao_mes, 'Informações das internações detalhadas') }}
+            {% endif %}
+          </div>
+          {% endif %}
+
+          {% if chaves_ativos %}
+          <div class="opcao-bloco" data-mostrar-com="{{ chaves_ativos | join(',') }}"{{ ' hidden' if not mostrar_ativos }}>
+            <p class="rotulo">Internos ativos</p>
+            {{ informacoes('campos', grupos_ativos, padrao_ativos, 'Informações a mostrar') }}
+          </div>
+          {% endif %}
+        </div>
+      {% endcall %}
+    </div>
+    <div class="preview-impressao">
+      <iframe class="quadro-impressao" title="Como os relatórios escolhidos saem no papel"{{ ' hidden' if not marcados }}></iframe>
+      <p class="nao-informado vazio-preview" data-sem-preview{{ ' hidden' if marcados }}>Marque um relatório ao lado para ver como ele sai no papel.</p>
+    </div>
+  </div>
+</main>
+<script src="{{ url_for('static', filename='impressao.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,448 @@
+"""
+Regras de negócio: validar e gravar triagens e prontuários, mudar status, gravar o acolhimento social (ficha, relatório
+e parecer da assistente social, com finalização e histórico de versões), lançar parcelas e unificar cadastros duplicados.
+
+As rotas (app.py) só chamam estas funções. Cada função de gravação devolve
+(objeto, erros): se `erros` vier preenchido, nada foi gravado e o formulário
+volta para a tela com as mensagens ao lado de cada campo.
+"""
+
+from datetime import date, datetime
+
+import catalogo
+import ficha_saude
+import relatorio_alta
+import servico_social
+import versoes
+from modelos import (ENVELOPE_PENDENTE, ENVELOPE_RECEBIDO, STATUS, STATUS_TRIAGEM, EvolucaoSaude, FichaSaude,
+                     Internacao, Parcela, Pessoa, RegistroEnfermagem, RelatorioAlta, RelatorioSocial, db)
+from prontuario import CONVENIO_A_DEFINIR, ler_data, ler_valor
+from relatorios import hoje_no_brasil
+from validacao import cpf_valido, fmt_cpf, ler_hora, normalizar_nome, rg_valido, so_digitos
+
+TRIAGEM_EM_ABERTO = ("em_admissao", "lista_espera")      # as situações em que a triagem ainda pode virar internação
+
+MOTIVOS = ["Conclusão", "Desistência", "Desligamento"]
+
+
+# ------------------------------------------------------------------ validação
+def _validar_pessoa(form, pessoa_id):
+    erros = {}
+    if not (form.get("nome") or "").strip():
+        erros["nome"] = "Informe o nome."
+    cpf = so_digitos(form.get("cpf"))
+    if cpf:
+        if not cpf_valido(cpf):
+            erros["cpf"] = "CPF inválido (dígito verificador não confere)."
+        else:
+            outra = db.session.execute(
+                db.select(Pessoa).filter(Pessoa.cpf == cpf, Pessoa.id != (pessoa_id or 0))
+            ).scalars().first()
+            if outra:
+                erros["cpf"] = (f"CPF já cadastrado para {outra.nome}. "
+                                "Use \"Paciente já cadastrado\" no topo do formulário.")
+            else:
+                import exclusao
+                with exclusao.vendo_nao_conferidos():        # um cadastro importado que ainda está em conferência: quem não pode vê-lo fica sabendo só que o CPF já existe, não de quem
+                    escondida = db.session.execute(db.select(Pessoa.id).filter(Pessoa.cpf == cpf, Pessoa.id != (pessoa_id or 0))).first()
+                if escondida:
+                    erros["cpf"] = "CPF já cadastrado em um cadastro importado que ainda está em conferência. Peça ao administrador para conferir esse cadastro antes de seguir."
+    if form.get("rg") and not rg_valido(form["rg"]):
+        erros["rg"] = "RG inválido: use só números (e X no final, se houver)."
+    cep = so_digitos(form.get("cep"))
+    if cep and len(cep) != 8:
+        erros["cep"] = "CEP deve ter 8 dígitos."
+    return erros
+
+
+def _validar_responsavel(form):
+    erros = {}
+    if form.get("resp_cpf") and not cpf_valido(form["resp_cpf"]):
+        erros["resp_cpf"] = "CPF inválido (dígito verificador não confere)."
+    if form.get("resp_rg") and not rg_valido(form["resp_rg"]):
+        erros["resp_rg"] = "RG inválido: use só números (e X no final, se houver)."
+    return erros
+
+
+def validar_prontuario(form, pessoa_id=None, importado=False):
+    """`importado`: o registro veio de uma importação (importar_historico.py) e pode estar sem a data de internação e sem o convênio: sem isso
+    nem um CPF errado se corrigiria nele."""
+    erros = _validar_pessoa(form, pessoa_id) | _validar_responsavel(form)
+    inicio, termino = ler_data(form.get("inicio")), ler_data(form.get("termino"))
+    if not inicio and not importado:
+        erros["inicio"] = "A data em que foi efetivamente internado é obrigatória."
+    if termino and inicio and termino < inicio:
+        erros["termino"] = "O término não pode ser antes do início."
+    if not catalogo.atual().existe(form.get("convenio")) and not (importado and not form.get("convenio")):        # (importado sem convênio: fica "A definir")
+        erros["convenio"] = "Escolha o convênio."
+    return erros
+
+
+def validar_triagem(form, pessoa_id=None):
+    erros = _validar_pessoa(form, pessoa_id) | _validar_responsavel(form)
+    contato, agendada = ler_data(form.get("primeiro_contato")), ler_data(form.get("internacao_agendada"))
+    if contato and agendada and agendada < contato:
+        erros["internacao_agendada"] = "O agendamento não pode ser antes do 1º contato."
+    if form.get("status") not in STATUS_TRIAGEM:
+        erros["status"] = "Escolha a situação da triagem."
+    if not (catalogo.atual().existe(form.get("convenio")) or form.get("convenio") == CONVENIO_A_DEFINIR):
+        erros["convenio"] = "Escolha o convênio (ou \"A definir\")."
+    return erros
+
+
+# ------------------------------------------------------------------ gravação
+def _pessoa_e_internacao(form):
+    """Decide o que criar e o que atualizar, pelos campos ocultos do formulário:
+         internacao_id -> editar uma internação/triagem existente
+         pessoa_id     -> nova internação de paciente já cadastrado
+         nenhum        -> paciente novo"""
+    internacao = db.session.get(Internacao, int(form["internacao_id"])) if form.get("internacao_id") else None
+    if internacao:
+        return internacao.pessoa, internacao
+    pessoa = db.session.get(Pessoa, int(form["pessoa_id"])) if form.get("pessoa_id") else None
+    return pessoa, None
+
+
+def salvar_prontuario(form):
+    pessoa, internacao = _pessoa_e_internacao(form)
+    importado = internacao is not None and internacao.importado
+    erros = validar_prontuario(form, pessoa.id if pessoa else None, importado)
+    if erros:
+        return None, erros
+
+    if pessoa is None:
+        pessoa = Pessoa()
+        db.session.add(pessoa)
+    pessoa.preencher(form)
+    if internacao is None:
+        internacao = Internacao(pessoa=pessoa)
+        db.session.add(internacao)
+    era_ativo = internacao.status == "ativo"      # registro novo ainda não tem status: não conta
+    internacao.preencher(form)
+    if not internacao.data_documento:
+        internacao.data_documento = internacao.inicio
+    # prontuário salvo = internação: encerrada se tiver término ou motivo (ou se veio importado como já encerrada, mesmo sem as datas)
+    ja_encerrada = importado and internacao.status == "inativo"
+    internacao.status = "inativo" if (internacao.termino or internacao.motivo or ja_encerrada) else "ativo"
+    if internacao.status == "ativo":
+        _limpar_envelope(internacao)          # voltou a ser interno: não há envelope para esperar
+        internacao.baixa_em = None            # e a baixa que havia (se havia) não vale mais
+    elif era_ativo:
+        # a baixa veio por aqui, sem a pergunta da janela "Dar baixa": o envelope fica como pendente
+        # (um clique em "Chegou" resolve; esquecer um envelope na casa de acolhida é o que se quer evitar)
+        _esperar_envelope(internacao)
+        internacao.baixa_em = datetime.now()      # é daqui que se cobra o relatório de alta
+    db.session.commit()
+    return internacao, {}
+
+
+def salvar_triagem(form):
+    pessoa, internacao = _pessoa_e_internacao(form)
+    erros = validar_triagem(form, pessoa.id if pessoa else None)
+    if erros:
+        return None, erros
+
+    if pessoa is None:
+        pessoa = Pessoa()
+        db.session.add(pessoa)
+    pessoa.preencher(form)
+    if internacao is None:
+        internacao = Internacao(pessoa=pessoa)
+        db.session.add(internacao)
+    internacao.preencher(form)
+    internacao.status = form["status"]
+    db.session.commit()
+    return internacao, {}
+
+
+# ------------------------------------------------------------- mudar status
+def mudar_status(internacao, dados):
+    """Chamado pela lista de triagens. `dados` vem do navegador (JSON).
+    'ativo' = Admitido: exige data de internação e convênio definido."""
+    novo = dados.get("status")
+    if novo in STATUS_TRIAGEM:
+        internacao.status = novo
+        db.session.commit()
+        return {}
+
+    if novo != "ativo":
+        return {"status": "Situação inválida."}
+
+    erros = {}
+    # data EFETIVA de internação: o dia em que ele de fato entrou (a agendada é só sugestão)
+    inicio = ler_data(dados.get("inicio")) or internacao.inicio
+    if not inicio:
+        erros["inicio"] = "Informe a data em que foi efetivamente internado."
+    convenio = dados.get("convenio") or internacao.convenio
+    if not catalogo.atual().existe(convenio):
+        erros["convenio"] = "Defina o convênio para admitir."
+    if erros:
+        return erros
+
+    internacao.inicio = inicio
+    internacao.hora_internacao = ler_hora(dados.get("hora_internacao")) or internacao.hora_internacao
+    internacao.convenio = convenio
+    if dados.get("contribuicao_valor") not in (None, ""):
+        internacao.contribuicao_valor = ler_valor(dados["contribuicao_valor"])
+    internacao.normalizar()
+    internacao.data_documento = internacao.data_documento or inicio
+    internacao.status = "ativo"
+    db.session.commit()
+    return {}
+
+
+def triagem_em_aberto(pessoa):
+    """A triagem desta pessoa que ainda está em andamento (em admissão ou na lista de espera), a mais recente; None se não há. Quem pede uma nova
+    internação para quem tem uma dessas deve ser perguntado se a internação sai dela (a triagem passa para a lista de internos) em vez de nascer
+    um segundo registro, e a triagem ficar para sempre na lista de triagens como se fosse outra pessoa."""
+    abertas = [i for i in pessoa.internacoes if i.status in TRIAGEM_EM_ABERTO]
+    return max(abertas, key=lambda i: i.id) if abertas else None
+
+
+# ---------------------------------------------------------------- dar baixa
+def dar_baixa(internacao, dados):
+    """Dar baixa em quem está ativo: grava a data e o motivo da saída e passa para inativo.
+    Pergunta também se o prontuário em papel (o envelope que foi com o interno para a casa de
+    acolhida) já voltou ao escritório: se não, a página inicial passa a avisar.
+    Chamado pela lista de internos. `dados` vem do navegador (JSON).
+    Devolve {campo: mensagem}; vazio = deu certo."""
+    if internacao.status != "ativo":
+        return {"status": "Só quem está ativo pode receber baixa."}
+
+    erros = {}
+    saida = ler_data(dados.get("termino"))
+    if not saida:
+        erros["termino"] = "Informe a data da saída."
+    elif saida > date.today():
+        erros["termino"] = "A data da saída não pode ser no futuro."
+    elif internacao.inicio and saida < internacao.inicio:
+        erros["termino"] = f"A saída não pode ser antes da internação ({internacao.inicio.strftime('%d/%m/%Y')})."
+    if dados.get("motivo") not in MOTIVOS:
+        erros["motivo"] = "Escolha o motivo."
+    voltou = dados.get("prontuario_voltou")
+    if voltou not in ("sim", "nao"):
+        erros["prontuario_voltou"] = "Informe se o prontuário já voltou ao escritório."
+    if erros:
+        return erros
+
+    internacao.termino = saida
+    internacao.motivo = dados["motivo"]
+    internacao.status = "inativo"
+    internacao.baixa_em = datetime.now()          # é daqui que se cobra o relatório de alta da assistente social
+    _limpar_envelope(internacao)                  # o que valia de uma baixa anterior (se houve) não vale mais
+    if voltou == "sim":
+        _envelope_recebido(internacao)
+    else:
+        _esperar_envelope(internacao)
+    db.session.commit()
+    return {}
+
+
+# --------------------------------------------------- envelope do prontuário
+def _esperar_envelope(internacao):
+    internacao.envelope = ENVELOPE_PENDENTE
+    internacao.envelope_recebido_em = None
+
+
+def _envelope_recebido(internacao):
+    internacao.envelope = ENVELOPE_RECEBIDO
+    internacao.envelope_recebido_em = internacao.envelope_recebido_em or hoje_no_brasil()   # 2º clique não muda a data
+
+
+def _limpar_envelope(internacao):
+    internacao.envelope = ""
+    internacao.envelope_recebido_em = None
+
+
+def registrar_envelope(internacao, situacao):
+    """Marca onde está o envelope de quem já recebeu baixa: 'recebido' (chegou ao escritório) ou
+    'pendente' (desfaz um engano, ou começa a controlar uma baixa antiga). Devolve o erro, ou None."""
+    if internacao.status != "inativo":
+        return "Só quem já recebeu baixa tem prontuário para voltar ao escritório."
+    if situacao == ENVELOPE_RECEBIDO:
+        _envelope_recebido(internacao)
+    elif situacao == ENVELOPE_PENDENTE:
+        _esperar_envelope(internacao)
+    else:
+        return "Situação do prontuário inválida."
+    db.session.commit()
+    return None
+
+
+# ------------------------------------------------------- acolhimento social
+def salvar_relatorio_social(internacao, form, usuario="", finalizar=False, assinatura=""):
+    """Grava o que a assistente social digitou (veja servico_social.py). Devolve (relatório, erros): com erros, nada foi gravado. `finalizar`: confere
+    o mínimo da conclusão (relatório, classificação geral e parecer), guarda data, hora e `assinatura` de quem finalizou e, se o parecer é 'não
+    condizente', marca a triagem como rejeitada. Um acolhimento já finalizado continua podendo ser alterado (sem adendos): vale o mesmo mínimo, e cada
+    alteração vira uma versão no histórico (versoes.py); se nada mudou, não vira nada."""
+    relatorio = internacao.relatorio_social
+    finalizado = relatorio is not None and relatorio.finalizado
+    dados, erros = servico_social.ler_formulario(form, servico_social.campos_para(internacao))
+    if finalizar or finalizado:
+        erros = {**servico_social.validar_finalizacao(dados, internacao), **erros}
+    if erros:
+        return None, erros
+    campos = versoes.campos_alterados(versoes.SOCIAL, relatorio.dados if relatorio is not None else {}, dados)
+    if finalizado and not campos:
+        return relatorio, {}                    # nada mudou: não é uma versão nova
+    if finalizado:
+        versoes.garantir_original(internacao, versoes.SOCIAL, relatorio)      # antes de trocar as respostas
+    relatorio = relatorio or RelatorioSocial(internacao=internacao)
+    relatorio.dados = dados                 # um dicionário novo: é assim que o SQLAlchemy percebe a mudança no JSON
+    relatorio.atualizado_por = usuario[:50]
+    agora = datetime.now()
+    if finalizar and not finalizado:
+        relatorio.situacao, relatorio.finalizado_em = "finalizado", agora
+        relatorio.finalizado_por, relatorio.assinatura = usuario[:50], assinatura[:200]
+        versoes.registrar(internacao, versoes.SOCIAL, versoes.FINALIZADO, dados, [], assinatura or usuario, agora)
+    elif finalizado:
+        versoes.registrar(internacao, versoes.SOCIAL, versoes.ALTERADO, dados, campos, assinatura or usuario, agora)
+    if (finalizar or finalizado) and dados["parecer"] == servico_social.NAO_CONDIZENTE and internacao.e_triagem:
+        internacao.status = "rejeitado"
+    db.session.add(relatorio)
+    db.session.commit()
+    return relatorio, {}
+
+
+# ------------------------------------------------------- relatório de alta (relatorio_alta.py)
+def salvar_relatorio_alta(internacao, form, usuario="", finalizar=False, assinatura=""):
+    """Grava o texto que a assistente social escreveu no relatório de alta. Devolve (relatório, erros): com erros, nada foi gravado. `finalizar` exige o texto e guarda data,
+    hora e `assinatura` de quem finalizou. Um relatório já finalizado continua podendo ser alterado: vale a mesma exigência, e cada alteração vira uma versão no histórico
+    (versoes.py); se nada mudou, não vira nada."""
+    relatorio = internacao.relatorio_alta
+    finalizado = relatorio is not None and relatorio.finalizado
+    dados, erros = relatorio_alta.ler_formulario(form)
+    if finalizar or finalizado:
+        erros = {**relatorio_alta.validar_finalizacao(dados), **erros}
+    if erros:
+        return None, erros
+    campos = versoes.campos_alterados(versoes.ALTA, relatorio.dados if relatorio is not None else {}, dados)
+    if finalizado and not campos:
+        return relatorio, {}                    # nada mudou: não é uma versão nova
+    if finalizado:
+        versoes.garantir_original(internacao, versoes.ALTA, relatorio)        # antes de trocar o texto
+    relatorio = relatorio or RelatorioAlta(internacao=internacao)
+    relatorio.dados = dados                 # um dicionário novo: é assim que o SQLAlchemy percebe a mudança no JSON
+    relatorio.atualizado_por = usuario[:50]
+    agora = datetime.now()
+    if finalizar and not finalizado:
+        relatorio.situacao, relatorio.finalizado_em = "finalizado", agora
+        relatorio.finalizado_por, relatorio.assinatura = usuario[:50], assinatura[:200]
+        versoes.registrar(internacao, versoes.ALTA, versoes.FINALIZADO, dados, [], assinatura or usuario, agora)
+    elif finalizado:
+        versoes.registrar(internacao, versoes.ALTA, versoes.ALTERADO, dados, campos, assinatura or usuario, agora)
+    db.session.add(relatorio)
+    db.session.commit()
+    return relatorio, {}
+
+
+# ------------------------------------------------------- ficha de saúde (ficha_saude.py)
+def salvar_ficha_saude(internacao, form, usuario="", finalizar=False, assinatura=""):
+    """Grava a anamnese que a enfermagem digitou. Devolve (ficha, erros): com erros, nada foi gravado. `finalizar` confere o mínimo (altura, peso e
+    as respostas sobre alergia, HIV/AIDS e tuberculose) e guarda data, hora e a `assinatura` de quem finalizou. Uma ficha já finalizada continua podendo
+    ser alterada (sem adendos): vale o mesmo mínimo, e cada alteração vira uma versão no histórico (versoes.py); se nada mudou, não vira nada."""
+    ficha = internacao.ficha_saude
+    finalizada = ficha is not None and ficha.finalizado
+    dados, erros = ficha_saude.ler_formulario(form)
+    if finalizar or finalizada:
+        erros = {**ficha_saude.validar_finalizacao(dados), **erros}
+    if erros:
+        return None, erros
+    campos = versoes.campos_alterados(versoes.SAUDE, ficha.dados if ficha is not None else {}, dados)
+    if finalizada and not campos:
+        return ficha, {}                        # nada mudou: não é uma versão nova
+    if finalizada:
+        versoes.garantir_original(internacao, versoes.SAUDE, ficha)           # antes de trocar as respostas
+    ficha = ficha or FichaSaude(internacao=internacao)
+    ficha.dados = dados                     # um dicionário novo: é assim que o SQLAlchemy percebe a mudança no JSON
+    ficha.atualizado_por = usuario[:50]
+    agora = datetime.now()
+    if finalizar and not finalizada:
+        ficha.situacao, ficha.finalizado_em = "finalizado", agora
+        ficha.finalizado_por, ficha.assinatura = usuario[:50], assinatura[:200]
+        versoes.registrar(internacao, versoes.SAUDE, versoes.FINALIZADO, dados, [], assinatura or usuario, agora)
+    elif finalizada:
+        versoes.registrar(internacao, versoes.SAUDE, versoes.ALTERADO, dados, campos, assinatura or usuario, agora)
+    db.session.add(ficha)
+    db.session.commit()
+    return ficha, {}
+
+
+def registrar_enfermagem(internacao, form, assinatura, agora=None):
+    """Um registro novo da Sistematização da Assistência de Enfermagem (sinais vitais, glicemia, perdas e evolução). Devolve (registro, erros)."""
+    dados, erros = ficha_saude.ler_registro(form, agora)
+    if erros:
+        return None, erros
+    registro = RegistroEnfermagem(internacao=internacao, criado_por=assinatura[:200], **dados)
+    db.session.add(registro)
+    db.session.commit()
+    return registro, {}
+
+
+def registrar_evolucao(internacao, texto, categoria, permitidas, assinatura):
+    """Uma anotação nova na evolução multiprofissional, na `categoria` (uma das `permitidas` a quem escreve). Devolve o erro, ou None."""
+    texto, erro = ficha_saude.ler_evolucao(texto, categoria, permitidas)
+    if erro:
+        return erro
+    db.session.add(EvolucaoSaude(internacao=internacao, categoria=categoria, texto=texto, criado_por=assinatura[:200]))
+    db.session.commit()
+    return None
+
+
+# ------------------------------------------------------------------ parcelas
+def lancar_parcela(internacao, form):
+    data = ler_data(form.get("data"))
+    if not data:
+        return "Informe a data da parcela."
+    numero = int(form.get("numero") or 0) or (max((p.numero for p in internacao.parcelas), default=0) + 1)
+    valor = ler_valor(form.get("valor")) if form.get("valor") else None
+    internacao.parcelas.append(Parcela(numero=numero, data=data, valor=valor))
+    db.session.commit()
+    return None
+
+
+# ------------------------------------------------------------- unificação
+def unificar(manter, remover):
+    """Passa as internações de `remover` para `manter`, completa os campos vazios
+    de `manter` com os de `remover` e apaga o cadastro duplicado."""
+    for coluna in Pessoa.__table__.columns:
+        if coluna.name in Pessoa.CAMPOS_DO_SISTEMA:
+            continue
+        if not getattr(manter, coluna.name) and getattr(remover, coluna.name):
+            setattr(manter, coluna.name, getattr(remover, coluna.name))
+    # todos os registros passam para o cadastro que fica, inclusive os excluídos (que `remover.internacoes` não enxerga):
+    # um UPDATE direto, antes de apagar `remover`, para que nenhum fique apontando para um cadastro que deixou de existir
+    db.session.execute(db.update(Internacao).where(Internacao.pessoa_id == remover.id).values(pessoa_id=manter.id))
+    db.session.expire(remover, ["internacoes"])
+    db.session.delete(remover)
+    db.session.commit()
+
+
+def buscar_pessoas(termo, limite=10):
+    """Busca por nome (sem acento, qualquer parte) ou por CPF."""
+    termo_n, termo_d = normalizar_nome(termo), so_digitos(termo)
+    if len(termo_n) < 2 and len(termo_d) < 3:
+        return []
+    achados = []
+    for p in db.session.execute(db.select(Pessoa).order_by(Pessoa.nome)).scalars():
+        if (termo_n and termo_n in normalizar_nome(p.nome)) or (len(termo_d) >= 3 and termo_d in p.cpf):
+            achados.append(p.resumo())
+            if len(achados) >= limite:
+                break
+    return achados
+
+
+def opcoes_formulario(convenio_atual=""):
+    """Listas usadas pelos selects dos formulários. `convenio_atual`: o convênio do registro que está sendo
+    editado, que continua na lista mesmo se foi desativado depois."""
+    from modelos import MODALIDADES
+    from prontuario import CATEGORIA_VALOR_ZERO, DOCUMENTOS, FAIXAS_PARTICULAR, NOME_CURTO
+    # o texto "Categoria: ..." que aparece enquanto se digita o valor usa os nomes curtos das telas
+    faixas = [(limite, inclusivo, NOME_CURTO.get(nome, nome)) for limite, inclusivo, nome in FAIXAS_PARTICULAR]     # [limite, "a partir de" (True) ou "acima de" (False), nome]
+    # (valor guardado, nome na tela): o select mostra "Caps AD" e grava "CAPS AD"
+    cadastro = catalogo.atual()
+    return dict(convenios=cadastro.para_escolher(convenio_atual), gratuitos=cadastro.gratuitos, faixas=faixas,
+                categoria_zero=NOME_CURTO[CATEGORIA_VALOR_ZERO], documentos=DOCUMENTOS, motivos=MOTIVOS,
+                modalidades=MODALIDADES, a_definir=CONVENIO_A_DEFINIR,
+                status_triagem=[(s, STATUS[s]) for s in STATUS_TRIAGEM], hoje=date.today().isoformat(),
+                fmt_cpf=fmt_cpf)

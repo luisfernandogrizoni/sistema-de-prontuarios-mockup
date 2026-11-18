@@ -1,0 +1,146 @@
+"""
+Copia os dados do SQLite local (instance/internos.db) para o banco da hospedagem.
+
+Os dados vão DIRETO do seu computador para o banco, por conexão criptografada.
+Não passam pelo git nem pelo GitHub.
+
+Uso:
+    python copiar_banco.py                  # copia para o banco cuja URL você informar
+    python copiar_banco.py --substituir     # destino já tem dados: apaga e copia de novo
+    python copiar_banco.py --origem outro.db
+
+A URL do banco de destino é lida da variável DESTINO_URL; se ela não existir, o script a
+pede (a digitação não aparece na tela, para a senha não ficar no histórico do terminal).
+Use a "External Database URL" do Render, que só deve ficar liberada durante a cópia:
+  1. antes: no banco, em Networking, deixe só o seu IP na lista de acesso;
+  2. rode este script;
+  3. depois: apague a lista de acesso externo (o serviço web usa a URL interna).
+
+Os usuários do login NÃO são copiados: crie-os no destino (ADMIN_USUARIO/ADMIN_SENHA ou
+flask criar-usuario). O script confere, linha por linha, se o destino ficou igual à origem.
+"""
+
+import os
+from pathlib import Path
+
+import click
+from sqlalchemy import create_engine, func, inspect, select, text
+
+import banco
+from modelos import db
+
+RAIZ = Path(__file__).parent
+TABELAS_COPIADAS = ("pessoas", "internacoes", "parcelas", "relatorios_sociais", "fichas_saude",
+                    "registros_enfermagem", "evolucoes_saude", "versoes_relatorios", "relatorios_alta", "notificacoes", "avisos_dispensados", "convenios",
+                    "niveis_acesso", "permissoes_nivel", "funcionarios", "eventos_auditoria")   # ordem das chaves
+OPCIONAIS = {"relatorios_sociais", "fichas_saude", "registros_enfermagem", "evolucoes_saude", "versoes_relatorios", "relatorios_alta", "notificacoes",
+             "permissoes_nivel", "eventos_auditoria"}    # tabelas mais novas: um banco de origem antigo pode não tê-las (a cópia segue sem elas)
+SEM_ID_SEQUENCIAL = {"avisos_dispensados", "permissoes_nivel"}   # a chave é um texto, não há sequência para acertar
+# Cadastros de fábrica: o sistema os cria sozinho ao subir, então um destino "vazio" já os tem. Não contam como dados
+# do destino, e a cópia sempre os substitui pelos da origem (se a origem for um banco antigo, sem eles, ficam os de fábrica
+# do destino).
+CADASTROS = {"convenios", "niveis_acesso", "permissoes_nivel", "funcionarios"}
+
+
+def _tabelas():
+    por_nome = db.metadata.tables
+    return [por_nome[nome] for nome in TABELAS_COPIADAS]
+
+
+def _colunas_do_banco(conexao, tabela):
+    """As colunas da tabela que o banco de fato tem (um banco de origem antigo ainda não tem as colunas acrescentadas depois)."""
+    tem = {c["name"] for c in inspect(conexao).get_columns(tabela.name)}
+    return [c for c in tabela.columns if c.name in tem]
+
+
+def _valor_de_coluna_nova(coluna):
+    """O que vai no destino para uma coluna que a origem antiga não tem: o valor padrão do modelo (ou vazio, se pode)."""
+    if coluna.default is not None and coluna.default.is_scalar:
+        return coluna.default.arg
+    if coluna.nullable:
+        return None
+    raise click.ClickException(f"O banco de origem é antigo demais (falta a coluna {coluna.table.name}.{coluna.name}). "
+                               "Abra o sistema uma vez com ele para atualizá-lo e copie de novo.")
+
+
+def _linhas(conexao, tabela, colunas=None):
+    """Todas as linhas, na ordem da chave (ordenado aqui: SQLite e Postgres ordenam texto diferente). `colunas`: só essas."""
+    colunas = list(colunas if colunas is not None else tabela.columns)
+    posicoes = [colunas.index(c) for c in tabela.primary_key.columns]
+    return sorted((tuple(l) for l in conexao.execute(select(*colunas))),
+                  key=lambda l: tuple(l[i] for i in posicoes))
+
+
+def _acertar_sequencias(conexao, tabelas):
+    """No Postgres, depois de inserir com id explícito a sequência continua em 1: o próximo
+    cadastro novo bateria numa chave que já existe. Põe cada sequência depois do maior id."""
+    for tabela in tabelas:
+        if tabela.name in SEM_ID_SEQUENCIAL:
+            continue
+        conexao.execute(text(
+            f"SELECT setval(pg_get_serial_sequence('{tabela.name}', 'id'), "
+            f"COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM {tabela.name}"))
+
+
+@click.command()
+@click.option("--origem", default=str(RAIZ / "instance" / "internos.db"), show_default=True,
+              help="banco SQLite com os dados")
+@click.option("--substituir", is_flag=True, help="apaga os dados que já existirem no destino")
+def copiar(origem, substituir):
+    if not Path(origem).exists():
+        raise click.ClickException(f"Não achei o banco de origem: {origem}")
+    texto = os.environ.get("DESTINO_URL") or click.prompt("URL do banco de destino", hide_input=True)
+    url = banco.normalizar_url(texto)
+    if url.get_backend_name() == "sqlite":
+        raise click.ClickException("O destino precisa ser o Postgres da hospedagem, não um SQLite.")
+
+    de = create_engine(f"sqlite:///{Path(origem).resolve().as_posix()}")
+    para = create_engine(url, **banco.opcoes_do_motor(url))
+    tabelas = _tabelas()
+    click.echo(f"Origem : {origem}\nDestino: {banco.descrever(url)}")
+
+    try:
+        db.metadata.create_all(para)                 # cria o que faltar (inclusive usuarios)
+        with de.connect() as o, para.begin() as d:   # destino numa transação: erro = nada muda
+            # os cadastros andam juntos (funcionários apontam para níveis): só copia se a origem tiver todos
+            if not all(inspect(o).has_table(nome) for nome in CADASTROS - OPCIONAIS):
+                tabelas = [t for t in tabelas if t.name not in CADASTROS]
+            tabelas = [t for t in tabelas if t.name not in OPCIONAIS or inspect(o).has_table(t.name)]
+            if any(t.name in CADASTROS for t in tabelas):       # as permissões do destino apontam para os níveis que vão ser trocados
+                d.execute(db.metadata.tables["permissoes_nivel"].delete())
+            existentes = {t.name: d.execute(select(func.count()).select_from(t)).scalar() for t in tabelas if t.name not in CADASTROS}
+            if any(existentes.values()):
+                resumo = ", ".join(f"{n}: {q}" for n, q in existentes.items())
+                if not substituir:
+                    raise click.ClickException(
+                        f"O destino já tem dados ({resumo}). Nada foi alterado. "
+                        "Para apagar e copiar de novo, use --substituir.")
+                click.confirm(f"Isto APAGA os dados do destino ({resumo}). Continuar?", abort=True)
+                for t in reversed(tabelas):
+                    d.execute(t.delete())
+
+            for t in reversed(tabelas):
+                if t.name in CADASTROS:
+                    d.execute(t.delete())
+            comuns = {t.name: _colunas_do_banco(o, t) for t in tabelas}
+            for t in tabelas:
+                novas = [c for c in t.columns if c not in comuns[t.name]]
+                linhas = o.execute(select(*comuns[t.name])).mappings().all()
+                if linhas:
+                    d.execute(t.insert(), [{**dict(l), **{c.name: _valor_de_coluna_nova(c) for c in novas}} for l in linhas])
+                click.echo(f"  {t.name}: {len(linhas)} linhas copiadas" + (f" (a origem não tem as colunas {', '.join(c.name for c in novas)}: ficam com o padrão)" if novas else ""))
+            _acertar_sequencias(d, tabelas)
+
+            # conferência: o destino tem que ser IGUAL à origem, valor por valor
+            for t in tabelas:
+                if _linhas(o, t, comuns[t.name]) != _linhas(d, t, comuns[t.name]):
+                    raise click.ClickException(f"A tabela {t.name} ficou diferente da origem. "
+                                               "Nada foi gravado (a cópia foi desfeita).")
+        click.echo("Conferido: o destino é idêntico à origem. Lembre de fechar o acesso externo ao banco.")
+    finally:
+        de.dispose()
+        para.dispose()
+
+
+if __name__ == "__main__":
+    copiar()

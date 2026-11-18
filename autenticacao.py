@@ -1,0 +1,435 @@
+"""
+Login: quem pode entrar no sistema e como a sessão é protegida.
+
+O que este módulo garante:
+  - toda rota exige login (exigir_login), menos as páginas de entrada (ROTAS_LIVRES) e os arquivos estáticos;
+  - a senha só existe como hash (scrypt, do Werkzeug) — nem o banco guarda a senha — e não pode ser das fáceis de adivinhar
+    (senhas_fracas.py: as mais usadas, o nome da casa, o usuário e o nome da pessoa);
+  - a senha que o administrador define (criar usuário, redefinir) é provisória: a pessoa troca antes de usar qualquer outra tela;
+    num acesso NOVO, depois da troca ela confirma o e-mail com um código antes de o sistema abrir (restricao_da_conta);
+  - dá para entrar com o usuário ou com o e-mail já confirmado (buscar_por_login; o e-mail não se repete entre funcionários);
+  - 5 senhas erradas seguidas bloqueiam o usuário por 10 minutos, e 15 erradas vindas do mesmo computador em 10 minutos
+    bloqueiam aquele computador (o atacante que troca de usuário a cada 5 erros também para);
+  - quem ativou o segundo fator (aplicativo autenticador, contas.py e totp.py) digita também o código depois da senha;
+  - o login vale 10 horas; quem marca "Manter conectado neste computador" na entrada fica conectado por 30 dias (não há tempo de inatividade: o
+    prazo conta da entrada, usando ou não). Sai antes quem teve a senha trocada ou o acesso desativado, e quem clica em Sair;
+  - trocar a senha derruba as outras sessões abertas desse usuário;
+  - as páginas não ficam guardadas no cache do navegador (botão "voltar" após sair).
+
+Não existe tela pública de cadastro, de propósito: quem cria usuários e define senhas é o administrador, em
+Cadastros > Funcionários (veja cadastros.pode_gerenciar_acessos). O terminal continua servindo para o primeiro
+usuário e para quem ficar sem nenhum administrador:
+
+    flask --app app criar-usuario maria           pede a senha e cria
+    flask --app app redefinir-senha maria         pede a senha nova (e desbloqueia)
+
+Hospedagem sem terminal: defina ADMIN_USUARIO e ADMIN_SENHA no painel do serviço.
+Se ainda não houver NENHUM usuário, o sistema cria esse na inicialização (depois de
+entrar, pode apagar ADMIN_SENHA do painel — ela não é mais usada).
+Defina também SECRET_KEY (um texto longo e aleatório) para as sessões não caírem
+a cada reinício.
+"""
+
+import hashlib
+import logging
+import math
+import os
+import secrets
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import click
+from flask import current_app, g, has_request_context, jsonify, redirect, request, session, url_for
+from flask.sessions import SecureCookieSessionInterface
+from sqlalchemy.exc import IntegrityError
+from werkzeug.security import check_password_hash, generate_password_hash
+
+import auditoria
+import csrf
+import email_envio
+import senhas_fracas
+from modelos import Funcionario, Usuario, db
+
+log = logging.getLogger(__name__)
+
+SENHA_MINIMA = 10
+MAX_FALHAS = 5
+BLOQUEIO = timedelta(minutes=10)
+DURACAO_LOGIN = timedelta(hours=10)            # entrada comum: a sessão acaba 10 horas depois da entrada, usando ou não (não há tempo de inatividade)
+DURACAO_LEMBRADA = timedelta(days=30)          # "Manter conectado neste computador": a sessão acaba 30 dias depois da entrada
+ENDERECOS_LOCAIS = {"127.0.0.1", "::1"}       # o próprio servidor (ou um proxy sem repassar quem acessa): não há endereço de rede para limitar
+LIMITE_POR_ENDERECO = 15                       # senhas ou códigos errados vindos do mesmo computador...
+JANELA_POR_ENDERECO = timedelta(minutes=10)    # ...nesta janela de tempo bloqueiam aquele computador
+VALIDADE_DO_CODIGO = 300                       # segundos para digitar o código do autenticador depois de acertar a senha
+# páginas que funcionam sem a pessoa ter entrado (e o que ela pode abrir com a senha provisória, antes de trocá-la)
+ROTAS_LIVRES = {"login", "static", "login_codigo", "esqueci_senha", "redefinir_senha", "csp_relatorio"}
+ROTAS_COM_SENHA_PROVISORIA = {"alterar_senha", "sair", "static"}
+ROTAS_COM_EMAIL_PENDENTE = {"seguranca", "enviar_codigo_email", "confirmar_email", "alterar_senha", "sair", "static"}
+ROTAS_COM_SEGUNDO_FATOR_PENDENTE = ROTAS_COM_EMAIL_PENDENTE | {"ativar_autenticador"}
+COMANDOS_DE_USUARIO = {"criar-usuario", "redefinir-senha"}
+# hash de uma senha qualquer: testar um usuário que não existe gasta o mesmo tempo
+# que testar um que existe (sem isso, o tempo de resposta revelaria quem existe)
+_HASH_FALSO = generate_password_hash(secrets.token_hex(8))
+
+
+# ------------------------------------------------------------------ chave da sessão
+def chave_secreta(pasta_instance):
+    """SECRET_KEY do ambiente; sem ela, uma chave aleatória guardada em instance/."""
+    chave = os.environ.get("SECRET_KEY")
+    if chave:
+        return chave
+    arquivo = Path(pasta_instance) / "secret.key"
+    if not arquivo.exists():
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        arquivo.write_text(secrets.token_hex(32))
+    return arquivo.read_text().strip()
+
+
+# ------------------------------------------------------------------ usuários
+def _buscar(nome):
+    nome = (nome or "").strip().lower()
+    return db.session.execute(db.select(Usuario).filter_by(nome=nome)).scalar_one_or_none()
+
+
+buscar_usuario = _buscar
+
+
+def buscar_por_login(texto):
+    """O usuário de quem digitou `texto` no campo "usuário ou e-mail": se tem @, o dono desse e-mail (só vale o já confirmado, e só se for de um
+    funcionário só); senão, ou se não achou, o nome de usuário."""
+    texto = (texto or "").strip().lower()
+    if "@" in texto:
+        donos = db.session.execute(db.select(Funcionario).filter(db.func.lower(Funcionario.email) == texto, Funcionario.email_confirmado_em.is_not(None),
+                                                                  Funcionario.usuario != "")).scalars().all()
+        if len(donos) == 1:
+            return _buscar(donos[0].usuario)
+    return _buscar(texto)
+
+
+def validar_senha(senha, nomes=()):
+    """O motivo de a senha não servir (curta demais, ou fácil de adivinhar: senhas_fracas.py), ou None. `nomes`: o usuário e o nome da pessoa."""
+    if len(senha or "") < SENHA_MINIMA:
+        return f"A senha precisa ter pelo menos {SENHA_MINIMA} caracteres."
+    return senhas_fracas.senha_fraca(senha, nomes)
+
+
+def validar_nome_de_usuario(nome):
+    """Devolve o erro, se houver (o nome é sempre guardado em minúsculas)."""
+    nome = (nome or "").strip().lower()
+    if not nome:
+        return "Informe o nome do usuário."
+    if len(nome) > 50:
+        return "O nome do usuário pode ter até 50 caracteres."
+    if _buscar(nome):
+        return f"O usuário {nome} já existe."
+    return None
+
+
+def criar_usuario(nome, senha, confirmar=True, provisoria=False, nomes=(), exigir_email=False):
+    """Devolve (usuario, erro). `confirmar=False` deixa a gravação para quem chamou (cadastro de funcionário:
+    o usuário e o funcionário são gravados juntos, ou nenhum dos dois). `provisoria`: a senha foi o administrador que definiu, e a
+    pessoa tem de trocá-la antes de usar o sistema. `exigir_email`: acesso novo, o e-mail tem de ser confirmado antes de usar o sistema."""
+    if erro := validar_nome_de_usuario(nome):
+        return None, erro
+    if erro := validar_senha(senha, [nome, *nomes]):
+        return None, erro
+    usuario = Usuario(nome=(nome or "").strip().lower(), senha_hash=generate_password_hash(senha), trocar_senha=provisoria,
+                     exigir_email=exigir_email)
+    db.session.add(usuario)
+    if confirmar:
+        db.session.commit()
+    return usuario, None
+
+
+def definir_senha(usuario, senha, confirmar=True, provisoria=False, nomes=()):
+    """Troca a senha, desbloqueia o usuário e derruba as sessões antigas. Devolve o erro, se houver. `provisoria`: veja criar_usuario."""
+    if erro := validar_senha(senha, [usuario.nome, *nomes]):
+        return erro
+    usuario.senha_hash = generate_password_hash(senha)
+    usuario.falhas, usuario.bloqueado_ate, usuario.ativo, usuario.trocar_senha = 0, None, True, provisoria
+    if confirmar:
+        db.session.commit()
+    return None
+
+
+def trocar_senha(usuario, atual, nova, confirmacao, nomes=()):
+    """Tela 'Alterar minha senha'. Devolve o erro, se houver. A senha nova é sempre a da própria pessoa (não é mais provisória)."""
+    if not check_password_hash(usuario.senha_hash, atual or ""):
+        return "A senha atual não confere."
+    if nova != confirmacao:
+        return "A confirmação não é igual à senha nova."
+    if nova == atual:
+        return "A senha nova precisa ser diferente da atual."
+    return definir_senha(usuario, nova, nomes=nomes)
+
+
+def criar_usuario_inicial():
+    """Roda na inicialização: cria o usuário de ADMIN_USUARIO/ADMIN_SENHA se não houver nenhum."""
+    if db.session.execute(db.select(db.func.count(Usuario.id))).scalar():
+        return
+    nome, senha = os.environ.get("ADMIN_USUARIO"), os.environ.get("ADMIN_SENHA")
+    if not (nome and senha):
+        if COMANDOS_DE_USUARIO & set(sys.argv):
+            return    # quem está criando o usuário agora não precisa do aviso "crie um usuário"
+        log.warning("Nenhum usuário cadastrado: ninguém consegue entrar. "
+                    "Crie um com: flask --app app criar-usuario NOME")
+        return
+    try:
+        _, erro = criar_usuario(nome, senha)
+    except IntegrityError:   # outro processo do servidor criou no mesmo instante
+        db.session.rollback()
+        return
+    if erro:
+        log.warning("ADMIN_USUARIO/ADMIN_SENHA não foram usados: %s", erro)
+
+
+# ------------------------------------------------------------------ entrar
+def _endereco():
+    return (request.remote_addr or "") if has_request_context() else ""
+
+
+def registrar_falha(usuario, acao="login.falha"):
+    """Uma senha ou um código errado de um usuário que existe: soma, bloqueia na quinta (10 minutos) e registra na trilha."""
+    usuario.falhas += 1
+    bloqueou = usuario.falhas >= MAX_FALHAS
+    if bloqueou:
+        usuario.falhas, usuario.bloqueado_ate = 0, datetime.now() + BLOQUEIO
+    db.session.commit()
+    auditoria.registrar("login.bloqueio" if bloqueou else acao, usuario=usuario.nome)
+    return bloqueou
+
+
+def entrar(nome, senha):
+    """Confere usuário e senha. Devolve (usuario, erro). A mensagem de erro é a mesma para
+    usuário inexistente e senha errada, para não revelar quem tem cadastro."""
+    usuario = buscar_por_login(nome)
+    agora = datetime.now()
+    endereco = _endereco()
+    if endereco and endereco not in ENDERECOS_LOCAIS and auditoria.falhas_do_endereco(endereco, agora - JANELA_POR_ENDERECO) >= LIMITE_POR_ENDERECO:
+        auditoria.registrar("login.bloqueado_endereco", usuario=usuario.nome if usuario else "")
+        return None, "Muitas tentativas erradas vindas deste computador. Espere alguns minutos e tente de novo."
+    if usuario and usuario.bloqueado_ate and usuario.bloqueado_ate > agora:
+        minutos = math.ceil((usuario.bloqueado_ate - agora).total_seconds() / 60)
+        auditoria.registrar("login.bloqueado", usuario=usuario.nome)
+        return None, f"Muitas tentativas erradas. Tente de novo em {minutos} min."
+
+    confere = check_password_hash(usuario.senha_hash if usuario else _HASH_FALSO, senha or "")
+    if not (usuario and usuario.ativo and confere):
+        if usuario:
+            registrar_falha(usuario)
+        else:
+            auditoria.registrar("login.inexistente", usuario="")       # (o que foi digitado como usuário não é guardado: pode ser uma senha no campo errado)
+        return None, "Usuário ou senha incorretos."
+
+    usuario.falhas, usuario.bloqueado_ate = 0, None
+    db.session.commit()
+    return usuario, None
+
+
+# ------------------------------------------------------------------ sessão
+def _versao(usuario):
+    """Muda quando a senha muda. Vai na sessão para invalidar as sessões antigas;
+    é um resumo do hash, para o cookie (que o usuário consegue ler) não expor o hash."""
+    return hashlib.sha256(usuario.senha_hash.encode()).hexdigest()[:16]
+
+
+class InterfaceDaSessao(SecureCookieSessionInterface):
+    """O cookie de quem pediu "Manter conectado neste computador" fica guardado no navegador por DURACAO_LEMBRADA; o dos outros, por DURACAO_LOGIN. (O prazo
+    de cada sessão é conferido no servidor de qualquer jeito, em usuario_da_sessao: o cookie só deixa de existir no navegador na hora certa.)"""
+
+    def get_expiration_time(self, app, session):
+        if session.permanent:
+            return datetime.now(timezone.utc) + (DURACAO_LEMBRADA if session.get("lembrar") else DURACAO_LOGIN)
+        return None
+
+
+def duracao_da_sessao():
+    """Quanto a sessão de agora vale desde a entrada: DURACAO_LEMBRADA (marcou "manter conectado") ou DURACAO_LOGIN."""
+    return DURACAO_LEMBRADA if session.get("lembrar") else DURACAO_LOGIN
+
+
+def texto_da_duracao(duracao):
+    """"10 horas", "30 dias": para a tela e para a auditoria."""
+    if duracao.days:
+        return f"{duracao.days} dia{'s' if duracao.days != 1 else ''}"
+    horas = int(duracao.total_seconds() // 3600)
+    return f"{horas} hora{'s' if horas != 1 else ''}"
+
+
+def abrir_sessao(usuario, lembrar=None):
+    """Abre a sessão. `lembrar`: True quando a pessoa marcou "Manter conectado neste computador" (a sessão dura DURACAO_LEMBRADA em vez de DURACAO_LOGIN);
+    None mantém a escolha da sessão de agora (trocar a própria senha reabre a sessão sem perguntar de novo)."""
+    if lembrar is None:
+        lembrar = bool(session.get("lembrar"))
+    session.clear()    # nunca reaproveita uma sessão que veio de antes do login
+    session["usuario_id"] = usuario.id
+    session["versao"] = _versao(usuario)
+    session["inicio"] = time.time()
+    session["lembrar"] = bool(lembrar)
+    session.permanent = True
+
+
+def usuario_da_sessao():
+    """O usuário da sessão, ou None. Não há tempo de inatividade: a pessoa fica conectada enquanto usa (ou deixa aberto) o sistema, e a sessão
+    acaba no máximo em `duracao_da_sessao()` depois da entrada. Quando acaba por isso, `g.sessao_encerrada` avisa (exigir_login registra e pede a entrada)."""
+    usuario_id = session.get("usuario_id")
+    if not usuario_id:
+        return None
+    agora = time.time()
+    limite = duracao_da_sessao()
+    if agora - session.get("inicio", agora) > limite.total_seconds():
+        g.sessao_encerrada, g.sessao_de, g.sessao_limite = "duracao", usuario_id, limite
+        session.clear()
+        return None
+    usuario = db.session.get(Usuario, usuario_id)
+    if not usuario or not usuario.ativo or session.get("versao") != _versao(usuario):
+        session.clear()
+        return None
+    session.setdefault("inicio", agora)
+    return usuario
+
+
+# ---- entrar em duas etapas: a senha certa leva à página do código; só o código certo abre a sessão
+def iniciar_segundo_fator(usuario, proximo="", lembrar=False):
+    session.clear()
+    session["mfa"] = {"uid": usuario.id, "ate": time.time() + VALIDADE_DO_CODIGO, "tentativas": 0, "proximo": proximo, "versao": _versao(usuario),
+                      "lembrar": bool(lembrar)}
+
+
+def usuario_aguardando_codigo():
+    """O usuário que acertou a senha e ainda não digitou o código (e a espera não venceu), ou None."""
+    espera = session.get("mfa")
+    if not espera or time.time() > espera.get("ate", 0):
+        session.pop("mfa", None)
+        return None
+    usuario = db.session.get(Usuario, espera["uid"])
+    bloqueado = usuario and usuario.bloqueado_ate and usuario.bloqueado_ate > datetime.now()
+    if not usuario or not usuario.ativo or not usuario.totp_ativo or bloqueado or espera.get("versao") != _versao(usuario):
+        session.pop("mfa", None)
+        return None
+    return usuario
+
+
+def errou_o_codigo():
+    """Soma um código errado nesta espera. Devolve quantos já foram (acima de 5, a espera acaba)."""
+    espera = session["mfa"]
+    espera["tentativas"] += 1
+    session["mfa"] = espera
+    return espera["tentativas"]
+
+
+def _e_administrador(usuario):
+    import cadastros                       # (cadastros importa este módulo: por isso aqui dentro)
+    return any(a.usuario == usuario.nome for a in cadastros.administradores())
+
+
+def restricao_da_conta(usuario):
+    """Por que esta pessoa ainda não pode usar o sistema: "senha" (a senha é provisória: só abre a troca), "email" (acesso novo: só abre a
+    confirmação do e-mail), "segundo_fator" (administrador sem o aplicativo autenticador, quando o sistema pode ser acessado de fora: só abre
+    a ativação dele) ou None. O e-mail só é cobrado se a pessoa TEM e-mail e o envio de e-mail está configurado: senão ninguém novo
+    conseguiria entrar (o administrador confirma na mão pelo terminal: flask --app app confirmar-email USUARIO)."""
+    if usuario is None:
+        return None
+    if usuario.trocar_senha:
+        return "senha"
+    if usuario.exigir_email:
+        dono = db.session.execute(db.select(Funcionario).filter_by(usuario=usuario.nome)).scalars().first()
+        if dono is not None and dono.email and not dono.email_confirmado_em and email_envio.configurado(current_app.instance_path):
+            return "email"
+    if os.environ.get("EXIGIR_SEGUNDO_FATOR") == "1" and not usuario.totp_ativo and _e_administrador(usuario):
+        return "segundo_fator"
+    return None
+
+
+def destino_seguro(destino, padrao):
+    """Para onde ir depois do login (?next=...): só caminhos deste site, nunca outro endereço."""
+    if (destino and destino.startswith("/") and not destino.startswith("//")
+            and "\\" not in destino):
+        return destino
+    return padrao
+
+
+# ------------------------------------------------------------------ ganchos do Flask
+def exigir_login():
+    """before_request: barra qualquer rota (inclusive as de dados) sem usuário logado."""
+    if request.endpoint == "static":
+        return None
+    g.usuario = usuario_da_sessao()
+    if g.get("sessao_encerrada"):
+        antigo = db.session.get(Usuario, g.sessao_de)
+        auditoria.registrar("sessao.expirada", usuario=antigo.nome if antigo else "", detalhe=f"passou de {texto_da_duracao(g.sessao_limite)}")
+    g.restricao_da_conta = restricao_da_conta(g.usuario)
+    if g.restricao_da_conta == "senha" and request.endpoint not in ROTAS_COM_SENHA_PROVISORIA:
+        if request.path.startswith("/api/") or request.is_json:
+            return jsonify(ok=False, erros={"senha": "Troque a senha provisória antes de continuar."}), 403
+        return redirect(url_for("alterar_senha"))
+    if g.restricao_da_conta == "email" and request.endpoint not in ROTAS_COM_EMAIL_PENDENTE:
+        if request.path.startswith("/api/") or request.is_json:
+            return jsonify(ok=False, erros={"email": "Confirme o seu e-mail antes de continuar."}), 403
+        return redirect(url_for("seguranca"))
+    if g.restricao_da_conta == "segundo_fator" and request.endpoint not in ROTAS_COM_SEGUNDO_FATOR_PENDENTE:
+        if request.path.startswith("/api/") or request.is_json:
+            return jsonify(ok=False, erros={"segundo_fator": "Ative o aplicativo autenticador antes de continuar."}), 403
+        return redirect(url_for("seguranca"))
+    if g.usuario or request.endpoint in ROTAS_LIVRES:
+        return None
+    if request.path.startswith("/api/") or request.is_json:
+        # chamadas do JavaScript: responde em JSON (o formato de erro é o que a tela já espera)
+        return jsonify(ok=False, erros={"sessao": "Sessão expirada. Entre de novo."}), 401
+    destino = request.path + ("?" + request.query_string.decode() if request.query_string else "")
+    return redirect(url_for("login", next=destino if request.method == "GET" else None))
+
+
+def cabecalhos_de_seguranca(resposta):
+    """after_request: nada de cache das páginas e proteção contra rodar dentro de outro site."""
+    resposta.headers["X-Content-Type-Options"] = "nosniff"
+    resposta.headers["X-Frame-Options"] = "SAMEORIGIN" if request.endpoint in csrf.EMOLDURAVEIS else "DENY"
+    resposta.headers["Referrer-Policy"] = "same-origin"
+    if current_app.config.get("SESSION_COOKIE_SECURE"):
+        # o sistema só se entende por HTTPS (cookie só-HTTPS): o navegador passa a recusar abrir este endereço sem HTTPS por 1 ano
+        # (só vale quando a resposta vem por HTTPS; por http o navegador ignora o cabeçalho)
+        resposta.headers["Strict-Transport-Security"] = "max-age=31536000"
+    if request.endpoint != "static":
+        resposta.headers["Cache-Control"] = "no-store"
+    return resposta
+
+
+# ------------------------------------------------------------------ comandos do terminal
+def _pedir_senha(rotulo, visivel):
+    """Pede a senha duas vezes. Escondida por padrão: nada aparece enquanto se digita."""
+    if visivel:
+        click.echo(f"Digite a senha (mínimo {SENHA_MINIMA} caracteres) e tecle Enter. "
+                   "Ela APARECE na tela. Depois repita para confirmar.")
+    else:
+        click.echo(f"Digite a senha (mínimo {SENHA_MINIMA} caracteres) e tecle Enter. Ela NÃO "
+                   "aparece na tela enquanto você digita (é normal). Depois repita para confirmar.\n"
+                   "Se o terminal não aceitar a digitação escondida, rode de novo com --visivel.")
+    return click.prompt(rotulo, hide_input=not visivel, confirmation_prompt=True)
+
+
+def registrar_comandos(app):
+    @app.cli.command("criar-usuario")
+    @click.argument("nome")
+    @click.option("--visivel", is_flag=True, help="mostra a senha enquanto você digita")
+    def criar_usuario_cmd(nome, visivel):
+        """Cria um usuário (a senha é pedida na hora)."""
+        senha = _pedir_senha("Senha", visivel)
+        usuario, erro = criar_usuario(nome, senha)
+        if erro:
+            raise click.ClickException(erro)
+        click.echo(f"Usuário {usuario.nome} criado.")
+
+    @app.cli.command("redefinir-senha")
+    @click.argument("nome")
+    @click.option("--visivel", is_flag=True, help="mostra a senha enquanto você digita")
+    def redefinir_senha_cmd(nome, visivel):
+        """Define uma senha nova para um usuário (e tira o bloqueio, se houver)."""
+        usuario = _buscar(nome)
+        if not usuario:
+            raise click.ClickException(f"O usuário {nome} não existe.")
+        senha = _pedir_senha("Senha nova", visivel)
+        if erro := definir_senha(usuario, senha):
+            raise click.ClickException(erro)
+        click.echo(f"Senha de {usuario.nome} alterada.")

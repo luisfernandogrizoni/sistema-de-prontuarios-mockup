@@ -1,0 +1,253 @@
+"""
+Atualiza um banco que já existe quando o modelo ganha colunas novas.
+
+db.create_all() só cria tabelas que não existem; ele NÃO acrescenta colunas
+numa tabela antiga. Por isso cada mudança de estrutura vira um passo aqui,
+que roda uma vez só (confere se a coluna já existe antes de mexer).
+"""
+
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
+
+
+def _colunas(db, tabela):
+    return {c["name"] for c in inspect(db.engine).get_columns(tabela)}
+
+
+def migrar(db):
+    # 1) agendamento x internação efetiva
+    if "internacao_agendada" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN internacao_agendada DATE"))
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN hora_agendada TIME"))
+        # quem está em triagem (inclusive desistência) e não tem saída nunca internou:
+        # a data que estava em "inicio" era o agendamento
+        db.session.execute(text("""
+            UPDATE internacoes
+               SET internacao_agendada = inicio, hora_agendada = hora_internacao,
+                   inicio = NULL, hora_internacao = NULL, data_documento = NULL
+             WHERE status IN ('em_admissao', 'lista_espera', 'desistiu')
+               AND termino IS NULL AND inicio IS NOT NULL"""))
+        db.session.commit()
+
+    # 2) envelope do prontuário: quem já tinha baixa fica "sem controle" ('') e não gera aviso
+    if "envelope" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN envelope VARCHAR(10) NOT NULL DEFAULT ''"))
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN envelope_recebido_em DATE"))
+        db.session.commit()
+
+    # 3) pedido de exames e enxoval: para qual data de internação já foram impressos (vazio = ainda não)
+    if "exames_impressos_para" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN exames_impressos_para DATE"))
+        db.session.commit()
+
+    # 4) exclusão em duas etapas: nada é apagado do banco ao excluir, só marcado (exclusao.py)
+    if "excluido_em" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN excluido_em TIMESTAMP"))
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN excluido_por VARCHAR(50) NOT NULL DEFAULT ''"))
+        db.session.commit()
+    if "excluido_em" not in _colunas(db, "pessoas"):
+        db.session.execute(text("ALTER TABLE pessoas ADD COLUMN excluido_em TIMESTAMP"))
+        db.session.commit()
+
+    # 5) acolhimento social: rascunho/finalizado e assinatura no relatório; marca do Serviço Social e registro profissional
+    #    (CRESS) no funcionário
+    if "situacao" not in _colunas(db, "relatorios_sociais"):
+        db.session.execute(text("ALTER TABLE relatorios_sociais ADD COLUMN situacao VARCHAR(12) NOT NULL DEFAULT 'rascunho'"))
+        db.session.execute(text("ALTER TABLE relatorios_sociais ADD COLUMN finalizado_em TIMESTAMP"))
+        db.session.execute(text("ALTER TABLE relatorios_sociais ADD COLUMN finalizado_por VARCHAR(50) NOT NULL DEFAULT ''"))
+        db.session.execute(text("ALTER TABLE relatorios_sociais ADD COLUMN assinatura VARCHAR(200) NOT NULL DEFAULT ''"))
+        db.session.commit()
+    if "servico_social" not in _colunas(db, "funcionarios"):
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN servico_social BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN registro_profissional VARCHAR(30) NOT NULL DEFAULT ''"))
+        db.session.commit()
+
+    # 6a) fase 3 do plano de segurança: e-mail do funcionário; troca obrigatória de senha e segundo fator do usuário
+    if "email" not in _colunas(db, "funcionarios"):
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN email VARCHAR(120) NOT NULL DEFAULT ''"))
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN email_confirmado_em TIMESTAMP"))
+        db.session.commit()
+    if "trocar_senha" not in _colunas(db, "usuarios"):
+        db.session.execute(text("ALTER TABLE usuarios ADD COLUMN trocar_senha BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE usuarios ADD COLUMN totp_segredo VARCHAR(200) NOT NULL DEFAULT ''"))
+        db.session.execute(text("ALTER TABLE usuarios ADD COLUMN totp_ativo BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE usuarios ADD COLUMN totp_ultimo_passo INTEGER NOT NULL DEFAULT 0"))
+        db.session.execute(text("ALTER TABLE usuarios ADD COLUMN totp_recuperacao VARCHAR(2000) NOT NULL DEFAULT ''"))
+        db.session.commit()
+
+    # 6b) acesso novo: o e-mail precisa ser confirmado antes de usar o sistema
+    if "exigir_email" not in _colunas(db, "usuarios"):
+        db.session.execute(text("ALTER TABLE usuarios ADD COLUMN exigir_email BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.commit()
+
+    # 6c) a ficha de saúde (enfermagem): função de cada funcionário na equipe e a permissão de ler os relatórios sigilosos. Quem já tinha a
+    #     marca do Serviço Social passa a ter a função "assistente_social" (a marca continua valendo igual).
+    if "profissao" not in _colunas(db, "funcionarios"):
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN profissao VARCHAR(20) NOT NULL DEFAULT ''"))
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN le_sigilosos BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("UPDATE funcionarios SET profissao = 'assistente_social' WHERE servico_social"))
+        db.session.commit()
+
+    # 6e) os dois polos (Escritório e Saúde): o polo de cada funcionário (vazio = o administrador ainda não definiu: vale como antes) e quando a baixa
+    #     foi dada (é dele que se cobra o relatório de alta; as baixas de antes ficam sem data e não cobram nada)
+    if "polo" not in _colunas(db, "funcionarios"):
+        db.session.execute(text("ALTER TABLE funcionarios ADD COLUMN polo VARCHAR(10) NOT NULL DEFAULT ''"))
+        db.session.commit()
+    if "baixa_em" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN baixa_em TIMESTAMP"))
+        db.session.commit()
+    _permissoes_dos_polos(db)
+
+    # 6f) registros importados de pastas e planilhas antigas (importar_historico.py): de onde vieram e em que lote (vazio = digitado no sistema)
+    if "origem" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN origem VARCHAR(160) NOT NULL DEFAULT ''"))
+        db.session.commit()
+
+    # 6g) a conferência dos registros importados com o prontuário físico (tela "Para conferir"): quando e por quem (vazio = ainda a conferir)
+    if "conferido_em" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN conferido_em TIMESTAMP"))
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN conferido_por VARCHAR(50) NOT NULL DEFAULT ''"))
+        db.session.commit()
+
+    # 6h) os documentos escaneados passam a poder ser vinculados a uma área (saúde, financeiro, social): os que já existem ficam sem área (geral)
+    if "area" not in _colunas(db, "anexos"):
+        db.session.execute(text("ALTER TABLE anexos ADD COLUMN area VARCHAR(12) NOT NULL DEFAULT ''"))
+        db.session.commit()
+
+    # 6i) a lista de espera (fila.py): quando cada um entrou na fila, a posição manual e o dia de ligar de novo. Quem já estava na lista de espera
+    #     entra com a data do 1º contato (ou a do cadastro): é a melhor ordem de chegada que se sabe. A tabela dos contatos (contatos_fila) o create_all cria.
+    if "fila_desde" not in _colunas(db, "internacoes"):
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN fila_desde TIMESTAMP"))
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN fila_ordem FLOAT"))
+        db.session.execute(text("ALTER TABLE internacoes ADD COLUMN fila_retornar_em DATE"))
+        db.session.execute(text("UPDATE internacoes SET fila_desde = COALESCE(primeiro_contato, criado_em) WHERE status = 'lista_espera'"))
+        db.session.commit()
+
+    # 6j) cores de convênio que deixaram de existir (a cor laranja tinha o nome de uma cidade): primeiro o que a identidade da instituição diz (cores_antigas:
+    #     antiga -> nova); depois, qualquer convênio com uma cor que o sistema não conhece ganha a primeira cor ainda livre (a mesma regra do cadastro novo)
+    from catalogo import CORES, TIPO_DAS_CATEGORIAS
+    from identidade import atual as identidade
+    for antiga, nova in identidade().cores_antigas.items():
+        db.session.execute(text("UPDATE convenios SET cor = :nova WHERE cor = :antiga"), {"nova": nova, "antiga": antiga})
+    escolhiveis = [cor for cor, _ in CORES]
+    conhecidas = {*escolhiveis, *TIPO_DAS_CATEGORIAS.values(), "outro"}          # (o Particular usa a cor especial "particular", que o cadastro não oferece)
+    linhas = db.session.execute(text("SELECT id, cor FROM convenios ORDER BY ordem, id")).all()
+    livres = [cor for cor in escolhiveis if cor not in {c for _, c in linhas}]
+    for id_, cor in linhas:
+        if cor not in conhecidas:
+            nova = livres.pop(0) if livres else escolhiveis[0]
+            db.session.execute(text("UPDATE convenios SET cor = :nova WHERE id = :id"), {"nova": nova, "id": id_})
+    db.session.commit()
+
+    # 6) o relatório de rejeição virou o parecer do acolhimento social: o que já foi escrito passa para lá
+    _rejeicoes_para_o_acolhimento(db)
+
+    # 6d) os adendos dos relatórios sigilosos deixaram de existir (o relatório se altera direto, com histórico de versões): os que já foram escritos
+    #     passam para o histórico, onde só o administrador os vê
+    _adendos_para_o_historico(db)
+
+    # 7) cadastros: na primeira subida trazem os convênios e o funcionário com que o sistema sempre trabalhou
+    semear(db)
+
+
+# A permissão "baixa" se dividiu em duas (dar baixa x registrar a chegada do envelope em papel) e "triagem" ganhou a "admitir": quem já tinha escolhido o nível
+# mínimo da antiga, nas Permissões, continua com a mesma escolha nas novas (senão elas voltariam ao padrão de fábrica sem ninguém pedir).
+HERDEIRAS = (("envelope", "baixa"), ("admitir", "triagem"))
+
+
+def _permissoes_dos_polos(db):
+    existentes = {linha[0] for linha in db.session.execute(text("SELECT chave FROM permissoes_nivel"))}
+    for nova, antiga in HERDEIRAS:
+        if antiga in existentes and nova not in existentes:
+            db.session.execute(text("INSERT INTO permissoes_nivel (chave, nivel_id, alterado_em, alterado_por) "
+                                    "SELECT CAST(:nova AS VARCHAR(40)), nivel_id, alterado_em, alterado_por FROM permissoes_nivel WHERE chave = :antiga"),
+                               {"nova": nova, "antiga": antiga})
+    db.session.commit()
+
+
+def _rejeicoes_para_o_acolhimento(db):
+    """A tabela rejeicoes_triagem (o relatório de rejeição, que existiu por pouco tempo) deixou de existir no modelo.
+    Cada relatório dela vira o parecer 'Não condizente' do acolhimento social da mesma triagem, como rascunho: a
+    assistente social completa o que falta (classificação) e finaliza. Depois as linhas são apagadas, então rodar de
+    novo não repete nada. Bancos novos nem têm a tabela."""
+    if "rejeicoes_triagem" not in inspect(db.engine).get_table_names():
+        return
+    import json
+    from datetime import datetime
+
+    from modelos import RelatorioSocial
+    from servico_social import NAO_CONDIZENTE
+
+    linhas = db.session.execute(text("SELECT internacao_id, dados, atualizado_por, atualizado_em FROM rejeicoes_triagem")).all()
+    for internacao_id, dados, por, em in linhas:
+        if isinstance(dados, str):
+            dados = json.loads(dados or "{}")
+        dados = dados or {}
+        novos = {"parecer": NAO_CONDIZENTE}
+        if dados.get("motivo"):
+            novos["motivo_rejeicao"] = dados["motivo"]
+        texto = (dados.get("relatorio") or "").strip()
+        if dados.get("data_da_rejeicao"):
+            try:
+                quando = datetime.strptime(dados["data_da_rejeicao"], "%Y-%m-%d").strftime("%d/%m/%Y")
+                texto = f"Rejeição registrada em {quando}." + (f"\n\n{texto}" if texto else "")
+            except ValueError:
+                pass
+        if texto:
+            novos["parecer_texto"] = texto
+        relatorio = db.session.execute(db.select(RelatorioSocial).filter_by(internacao_id=internacao_id)).scalars().first()
+        if relatorio is None:
+            db.session.add(RelatorioSocial(internacao_id=internacao_id, dados=novos, atualizado_por=(por or "")[:50]))
+        else:
+            relatorio.dados = {**novos, **(relatorio.dados or {})}      # o que já estava no acolhimento tem a palavra final
+    db.session.execute(text("DELETE FROM rejeicoes_triagem"))
+    db.session.commit()
+
+
+def _adendos_para_o_historico(db):
+    """As tabelas adendos_sociais e adendos_saude deixaram de existir no modelo. Cada adendo vira uma entrada do tipo "adendo" no histórico de versões
+    (versoes_relatorios), com o texto, a data e o autor de sempre, e depois as linhas antigas são apagadas, então rodar de novo não repete nada.
+    Nada se perde: o texto fica guardado no histórico, que só o administrador vê."""
+    from datetime import datetime
+
+    from modelos import VersaoRelatorio
+
+    existentes = inspect(db.engine).get_table_names()
+    for tabela, tipo, chave, pai in (("adendos_sociais", "social", "relatorio_id", "relatorios_sociais"), ("adendos_saude", "saude", "ficha_id", "fichas_saude")):
+        if tabela not in existentes or pai not in existentes:
+            continue
+        linhas = db.session.execute(text(f"SELECT p.internacao_id, a.texto, a.criado_em, a.criado_por FROM {tabela} a JOIN {pai} p ON p.id = a.{chave} ORDER BY a.id")).all()
+        for internacao_id, texto, em, por in linhas:
+            if isinstance(em, str):
+                em = datetime.fromisoformat(em)
+            db.session.add(VersaoRelatorio(internacao_id=internacao_id, tipo=tipo, evento="adendo", dados={}, campos=[], texto=texto or "",
+                                           criado_em=em or datetime.now(), criado_por=por or ""))
+        db.session.execute(text(f"DELETE FROM {tabela}"))
+    db.session.commit()
+
+
+def semear(db):
+    """Cria os convênios, os níveis de acesso e o funcionário de fábrica se os cadastros estão vazios.
+    Pode rodar quantas vezes quiser."""
+    from catalogo import NIVEIS_DE_FABRICA, convenios_de_fabrica
+    from identidade import atual as identidade
+    import permissoes
+    from modelos import Convenio, Funcionario, NivelAcesso
+
+    try:
+        if not db.session.execute(db.select(db.func.count(Convenio.id))).scalar():
+            for ordem, (nome, tela, slug, gratuito, vagas, cor) in enumerate(convenios_de_fabrica(), 1):
+                db.session.add(Convenio(nome=nome, nome_tela=tela, slug=slug, gratuito=gratuito, vagas=vagas, cor=cor,
+                                        ativo=True, ordem=ordem))
+        if not db.session.execute(db.select(db.func.count(NivelAcesso.id))).scalar():
+            for ordem, nome in enumerate(NIVEIS_DE_FABRICA, 1):
+                db.session.add(NivelAcesso(nome=nome, ordem=ordem, ativo=True))
+            db.session.flush()
+        if not db.session.execute(db.select(db.func.count(Funcionario.id))).scalar():
+            topo = db.session.execute(db.select(NivelAcesso).order_by(NivelAcesso.ordem, NivelAcesso.id)).scalars().first()
+            db.session.add(Funcionario(nome=identidade().emissor_nome, cargo=identidade().emissor_cargo, ativo=True, padrao=True,
+                                       nivel_id=topo.id if topo else None))
+        db.session.commit()
+    except IntegrityError:          # outro processo do servidor semeou ao mesmo tempo
+        db.session.rollback()
+    permissoes.semear()             # o nível de fábrica de cada permissão (a nova de uma versão futura entra sozinha)

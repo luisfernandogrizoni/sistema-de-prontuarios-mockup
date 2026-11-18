@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_voltar.html" import linha_voltar with context %}
+{% from "_cartao.html" import legenda %}
+{% block titulo %}Alterar senha — {{ identidade.nome }}{% endblock %}
+
+{% block estilo %}
+{% endblock %}
+
+{% block conteudo %}
+<main class="largo">
+  {% if not usuario_atual.trocar_senha %}{{ linha_voltar(url_for('seguranca')) }}{% endif %}
+  <h1>Alterar minha senha</h1>
+  {% if usuario_atual.trocar_senha %}<p class="caixa-info" role="status">A sua senha é provisória: crie uma senha nova para continuar.</p>{% endif %}
+  {% if erro %}<p class="caixa-erros erro" role="alert">{{ erro }}</p>{% endif %}
+  <form class="estreito curto" method="post" action="{{ url_for('alterar_senha') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <fieldset class="tom-roxo">
+      {{ legenda('Senha', 'cadeado') }}
+      <div class="grade">
+        <label class="c6">Senha atual
+          <input name="atual" type="password" autocomplete="current-password" required autofocus></label>
+        <label class="c6">Senha nova
+          <input name="nova" type="password" autocomplete="new-password" minlength="{{ minimo }}" required></label>
+        <label class="c6">Repita a senha nova
+          <input name="confirmacao" type="password" autocomplete="new-password" minlength="{{ minimo }}" required></label>
+      </div>
+    </fieldset>
+    <div class="botoes-form"><button class="botao">Alterar senha</button></div>
+  </form>
+</main>
+{% endblock %}
