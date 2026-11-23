@@ -126,10 +126,25 @@
   .forma-pgto.pix { background: #e3f4ee; color: #0b6b4f; }
   .forma-pgto.dinheiro { background: #fdf3dc; color: #7a5200; }
   .forma-pgto.vazia { background: none; padding: 1px 4px; color: var(--suave); font-weight: 400; }
+  /* a lista da forma de pagamento: tem a cara do selo (a cor da forma escolhida); a parcela sem forma pede a escolha com a borda tracejada */
+  .forma-celula { position: relative; display: inline-block; }
+  .forma-celula::after { content: "▾"; position: absolute; right: 8px; top: 50%; transform: translateY(-52%); font-size: .7rem; color: #5b6779; pointer-events: none; }
+  .forma-form { margin: 0; }
+  select.forma-pgto-select { appearance: none; -webkit-appearance: none; font: inherit; font-size: .78rem; font-weight: 600; padding: 2px 22px 2px 9px; border: 1px solid transparent; border-radius: 999px;
+                             background: #eef1f5; color: #3a4658; cursor: pointer; max-width: 100%; }
+  select.forma-pgto-select.pix { background: #e3f4ee; color: #0b6b4f; }
+  select.forma-pgto-select.dinheiro { background: #fdf3dc; color: #7a5200; }
+  select.forma-pgto-select.vazia { background: #fff; border: 1px dashed #9aa7b8; color: var(--suave); font-weight: 500; }
+  select.forma-pgto-select:focus-visible { outline: 2px solid #1d4f9c; outline-offset: 1px; }
+  select.forma-pgto-select.gravou { box-shadow: 0 0 0 3px #bfe2c6; }
+  select.forma-pgto-select:disabled { opacity: .6; cursor: progress; }
+  .so-impressao { display: none; }
   @media (max-width: 420px) {                                        /* a coluna "Pago em" cabe sem rolar a tabela */
     .painel-aba[data-painel="financeiro"] table.simples { font-size: .8rem; }
     .painel-aba[data-painel="financeiro"] .simples th, .painel-aba[data-painel="financeiro"] .simples td { padding-left: 4px; padding-right: 4px; }
     .painel-aba[data-painel="financeiro"] .simples .botao.pequeno { padding-left: 9px; padding-right: 9px; }
+    .forma-celula::after { display: none; }                          /* sem a seta, para a coluna caber; a lista continua um toque */
+    select.forma-pgto-select { padding: 2px 6px; font-size: .74rem; }
   }
   @media (max-width: 640px) {
     .ficha-topo { padding: 16px; gap: 14px; }
@@ -146,6 +161,8 @@
     .area-acoes { margin-left: 0; width: 100%; }
       }
   @media print {
+    .forma-celula { display: none !important; }
+    .so-impressao { display: inline !important; }                  /* no papel, a forma de pagamento sai como texto, não como lista */
     .ficha-topo .acoes, details.mais, .area-acoes, .acoes-doc, .acoes-cartao, .filtro-area, .alertas, .abas-barra, .abas-prontuario, .faixa-passagens, .topo-escaneados { display: none !important; }
     .ficha-topo { background: none; border-color: #aaa; padding: 10px 12px; }
     .ficha-grade, .grade-dupla { display: block; }
@@ -520,7 +537,17 @@
                     <td>{{ parc.numero }}ª</td>
                     <td>{{ parc.data | data }}</td>
                     <td class="num">{{ parc.valor | reais if parc.valor is not none else '—' }}</td>
-                    <td>{% if parc.forma_txt %}<span class="forma-pgto {{ parc.forma }}">{{ parc.forma_txt }}</span>{% else %}<span class="forma-pgto vazia" title="Parcela lançada antes de se registrar a forma de pagamento">—</span>{% endif %}</td>
+                    <td>
+                      {% set chip %}{% if parc.forma_txt %}<span class="forma-pgto {{ parc.forma }}">{{ parc.forma_txt }}</span>{% else %}<span class="forma-pgto vazia" title="Parcela lançada antes de se registrar a forma de pagamento">—</span>{% endif %}{% endset %}
+                      {% if pode('financeiro') %}
+                      <span class="forma-celula"><form class="forma-form" method="post" action="{{ url_for('mudar_forma_da_parcela', id=parc.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <select name="forma" class="forma-pgto-select {{ parc.forma or 'vazia' }}" aria-label="Como a {{ parc.numero }}ª parcela foi paga">
+                          {% if not parc.forma %}<option value="" selected disabled>Escolha</option>{% endif %}
+                          {% for chave, nome in formas_de_pagamento.items() %}<option value="{{ chave }}"{{ ' selected' if parc.forma == chave }}>{{ nome }}</option>{% endfor %}
+                        </select><noscript><button class="botao pequeno secundario">Salvar</button></noscript>
+                      </form></span><span class="so-impressao">{{ chip }}</span>
+                      {% else %}{{ chip }}{% endif %}
+                    </td>
                     <td>{% if pode('financeiro') %}<form method="post" action="{{ url_for('excluir_parcela', id=parc.id) }}"
                               data-confirmar="Excluir a {{ parc.numero }}ª parcela?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                           <button class="botao pequeno secundario">Excluir</button></form>{% endif %}</td>
@@ -842,6 +869,32 @@
     history.replaceState(null, "", location.pathname + location.hash);
     window.location.href = {{ url_for('baixar_impressos', id=i.id) | tojson }};
     {% endif %}
+
+    // ---- Financeiro: marcar como a parcela foi paga (Dinheiro ou Pix) direto na tabela, sem recarregar a página (a rota responde em JSON; sem JavaScript vale o formulário comum)
+    todos("select.forma-pgto-select").forEach(function (lista) {
+      lista.addEventListener("change", function () {
+        lista.disabled = true;
+        fetch(lista.form.action, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forma: lista.value }) })
+          .then(function (r) { return r.json().then(function (d) { if (!r.ok || !d.ok) throw new Error(d.erro || "erro"); return d; }); })
+          .then(function (d) {
+            lista.className = "forma-pgto-select " + d.forma;
+            var vazio = lista.querySelector('option[value=""]');
+            if (vazio) vazio.remove();                                                    // depois de escolhida, a opção "Escolha" some
+            var impressao = lista.closest("td").querySelector(".so-impressao");           // o texto que sai no papel acompanha a escolha
+            if (impressao) {
+              var selo = document.createElement("span");
+              selo.className = "forma-pgto " + d.forma;
+              selo.textContent = d.forma_txt;
+              impressao.textContent = "";
+              impressao.appendChild(selo);
+            }
+            lista.classList.add("gravou");
+            setTimeout(function () { lista.classList.remove("gravou"); }, 900);
+            lista.disabled = false;
+          })
+          .catch(function () { lista.disabled = false; lista.form.submit(); });           // não gravou por aqui: o formulário comum grava e mostra o motivo, se houver
+      });
+    });
 
     // ---- excluir o registro (a janela da passagem que o botão da visão aponta)
     todos("[data-excluir]").forEach(function (b) {

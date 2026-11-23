@@ -208,7 +208,8 @@ preencher e quem chamar, e cada tentativa de contato fica registrada (`docs\list
 ordem da fila e, onde precisar, usar **Levar para o topo / Subir / Descer** no menu ⋯. Para quem vai receber o aviso de vaga aberta (sino): o Escritório e o administrador.
 
 **Depois da atualização que trouxe a forma de pagamento da parcela** (nada a fazer à mão): ao lançar uma parcela na aba *Financeiro* da ficha, passa a ser obrigatório dizer se foi paga em
-*Dinheiro* ou no *Pix*. As parcelas que já estavam lançadas ficam sem a informação (aparecem com "—"); o banco ganha a coluna sozinho na subida. O Início soma o recebido do mês por forma
+*Dinheiro* ou no *Pix*. As parcelas que já estavam lançadas ficam sem a informação; o banco ganha a coluna sozinho na subida. Na tabela de parcelas da ficha (aba *Financeiro*) cada parcela tem uma lista
+(*Dinheiro* ou *Pix*) para marcar, também nas antigas, e a escolha grava na hora, sem recarregar a página (quem tem a permissão *financeiro*; a trilha de auditoria guarda a troca). O Início soma o recebido do mês por forma
 ("Pix R$ ... · Dinheiro R$ ...") e o relatório de contribuições traz a tabela *Por forma de pagamento*, com uma linha *Não informada* para as parcelas antigas.
 
 **Importar ex-residentes de pastas e planilhas antigas** (só quando houver uma lista pronta): `importar_historico.py` lê a lista, simula, e só grava com `--gravar`,

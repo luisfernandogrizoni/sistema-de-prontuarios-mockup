@@ -279,7 +279,7 @@ REGRAS = {
     "baixa_interno": "baixa", "registrar_envelope": "envelope",
     "ver_anexo": "ver", "baixar_anexo": "ver", "enviar_anexo": "anexar", "remover_anexo": "anexar", "mudar_area_do_anexo": "anexar",       # (ver e baixar: o sigilo da área do documento é conferido na rota)
     "restaurar_anexo": "lixeira", "apagar_anexo": "lixeira",
-    "lancar_parcela": "financeiro", "excluir_parcela": "financeiro",
+    "lancar_parcela": "financeiro", "excluir_parcela": "financeiro", "mudar_forma_da_parcela": "financeiro",
     "excluir_registro": "excluir", "unificar_pessoas": "unificar",
 
     "cadastros": "cadastros", "lista_convenios": "cadastros", "novo_convenio": "cadastros", "editar_convenio": "cadastros",

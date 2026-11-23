@@ -404,6 +404,17 @@ def lancar_parcela(internacao, form):
     return None
 
 
+def mudar_forma_da_parcela(parcela, forma):
+    """Marca como a parcela foi paga (a de antes de existir a informação, ou para corrigir uma escolha). Devolve o erro, ou None."""
+    forma = (forma or "").strip()
+    if forma not in FORMAS_DE_PAGAMENTO:
+        return "Escolha Dinheiro ou Pix."
+    if parcela.forma != forma:
+        parcela.forma = forma
+        db.session.commit()
+    return None
+
+
 # ------------------------------------------------------------- unificação
 def unificar(manter, remover):
     """Passa as internações de `remover` para `manter`, completa os campos vazios

@@ -1023,6 +1023,23 @@ def lancar_parcela(id):
     return redirect(url_for("ficha", id=id) + "#parcelas")
 
 
+@app.post("/parcelas/<int:id>/forma")
+def mudar_forma_da_parcela(id):
+    """Marca como a parcela foi paga. A ficha chama por JavaScript (JSON, sem recarregar a página); sem JavaScript vale o formulário comum, que volta para a ficha."""
+    parcela = _buscar(Parcela, id)
+    dados = request.get_json(silent=True) if request.is_json else request.form
+    antes = parcela.forma_txt or "não informada"
+    erro = servicos.mudar_forma_da_parcela(parcela, (dados or {}).get("forma"))
+    if not erro and parcela.forma_txt != antes:
+        auditoria.registrar("parcela.forma", "internacao", parcela.internacao_id, parcela.internacao.pessoa_id, detalhe=f"{antes} -> {parcela.forma_txt}")      # só as formas, nunca o valor
+    if request.is_json:
+        if erro:
+            return jsonify(ok=False, erro=erro), 400
+        return jsonify(ok=True, forma=parcela.forma, forma_txt=parcela.forma_txt, numero=parcela.numero)
+    flash(erro or f"{parcela.numero}ª parcela: {parcela.forma_txt}.")
+    return redirect(url_for("ficha", id=parcela.internacao_id) + "#parcelas")
+
+
 @app.post("/parcelas/<int:id>/excluir")
 def excluir_parcela(id):
     parcela = _buscar(Parcela, id)

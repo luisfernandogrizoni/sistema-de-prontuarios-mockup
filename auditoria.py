@@ -97,6 +97,7 @@ ACOES = {
     "envelope.registrar": ("alteracao", "Anotou onde está o prontuário em papel"),
     "parcela.lancar": ("alteracao", "Lançou uma parcela"),
     "parcela.excluir": ("alteracao", "Excluiu uma parcela"),
+    "parcela.forma": ("alteracao", "Mudou a forma de pagamento de uma parcela"),
     "pessoa.unificar": ("alteracao", "Unificou dois cadastros"),
     "registro.excluir": ("alteracao", "Excluiu um registro (foi para a lixeira)"),
     "registro.restaurar": ("alteracao", "Restaurou um registro da lixeira"),
@@ -242,7 +243,7 @@ LEITURAS = {
 # registradas no ponto exato em que a ação deu certo (app.py, autenticacao.py, permissoes.py)
 EXPLICITAS = {
     "login", "sair", "alterar_senha", "aviso_ciente", "unificar_pessoas", "salvar_triagem", "mudar_status", "registrar_contato_fila", "mover_na_fila", "internar_da_triagem", "baixa_interno", "registrar_envelope",
-    "gerar", "lancar_parcela", "excluir_parcela", "excluir_registro", "restaurar_registro", "apagar_registro",
+    "gerar", "lancar_parcela", "excluir_parcela", "mudar_forma_da_parcela", "excluir_registro", "restaurar_registro", "apagar_registro",
     "novo_convenio", "editar_convenio", "novo_funcionario", "novo_nivel", "editar_nivel", "mover_nivel", "salvar_permissoes",
     "pagina_auditoria", "exportar_auditoria", "login_codigo", "esqueci_senha", "redefinir_senha", "enviar_codigo_email", "confirmar_email",
     "ativar_autenticador", "desativar_autenticador", "marcar_revisao", "descartar_rascunho", "marcar_conferido",
