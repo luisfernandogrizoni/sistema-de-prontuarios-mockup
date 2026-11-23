@@ -207,6 +207,10 @@ arquivos soltos de `static`; nos documentos já emitidos nada muda. A cor laranj
 preencher e quem chamar, e cada tentativa de contato fica registrada (`docs\lista-de-espera.md`). Quem já estava na lista entra com a data do 1º contato. O ideal é conferir, em cada categoria, a
 ordem da fila e, onde precisar, usar **Levar para o topo / Subir / Descer** no menu ⋯. Para quem vai receber o aviso de vaga aberta (sino): o Escritório e o administrador.
 
+**Depois da atualização que trouxe a forma de pagamento da parcela** (nada a fazer à mão): ao lançar uma parcela na aba *Financeiro* da ficha, passa a ser obrigatório dizer se foi paga em
+*Dinheiro* ou no *Pix*. As parcelas que já estavam lançadas ficam sem a informação (aparecem com "—"); o banco ganha a coluna sozinho na subida. O Início soma o recebido do mês por forma
+("Pix R$ ... · Dinheiro R$ ...") e o relatório de contribuições traz a tabela *Por forma de pagamento*, com uma linha *Não informada* para as parcelas antigas.
+
 **Importar ex-residentes de pastas e planilhas antigas** (só quando houver uma lista pronta): `importar_historico.py` lê a lista, simula, e só grava com `--gravar`,
 depois do backup e de você digitar SIM. Passo a passo, formato da lista e como desfazer um lote em `docs\importacao-historico.md`. O `requirements.txt` ganhou o
 `openpyxl`: a atualização o instala sozinha. Depois de importar, o administrador completa cada registro com o prontuário de papel pela tela **Para conferir** (item do menu só dele, com o número dos

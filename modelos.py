@@ -436,6 +436,10 @@ class Internacao(CamposDeFormulario, db.Model):
 
 
 # =========================================================================
+# Como a parcela foi paga (chave guardada -> nome nas telas). Parcela lançada antes de existir esta informação fica sem forma ("").
+FORMAS_DE_PAGAMENTO = {"dinheiro": "Dinheiro", "pix": "Pix"}
+
+
 class Parcela(db.Model):
     __tablename__ = "parcelas"
 
@@ -444,8 +448,14 @@ class Parcela(db.Model):
     numero: Mapped[int] = mapped_column()
     data: Mapped[date | None] = mapped_column(Date)
     valor: Mapped[float | None] = mapped_column(Float)
+    forma: Mapped[str] = mapped_column(String(10), default="")          # "dinheiro" ou "pix" (FORMAS_DE_PAGAMENTO); "" = ainda sem a informação
 
     internacao: Mapped[Internacao] = relationship(back_populates="parcelas")
+
+    @property
+    def forma_txt(self):
+        """"Dinheiro", "Pix" ou "" (parcela de antes de se registrar a forma)."""
+        return FORMAS_DE_PAGAMENTO.get(self.forma, "")
 
 
 # =========================================================================

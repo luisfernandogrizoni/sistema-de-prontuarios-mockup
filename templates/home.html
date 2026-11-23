@@ -71,6 +71,7 @@
   .tile .rotulo { display: block; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--suave); }
   .tile strong { display: block; margin-top: 3px; font-size: 1.3rem; line-height: 1.15; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
   .tile small { display: block; margin-top: 3px; color: var(--suave); font-size: .76rem; }
+  .tile small.por-forma { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .tile .barra { height: 5px; margin: 8px 0 0; }
   .tile .barra span { background: var(--verde, #3f9d5a); }
   .tile.atraso { background: var(--perigo-suave); border-color: var(--perigo-borda); }
@@ -281,6 +282,7 @@
               <div class="barra" role="img" aria-label="{{ c.percentual }}% do esperado já entrou"><span style="width: {{ c.percentual }}%"></span></div>
               <small>{{ c.percentual }}% dos {{ c.esperado_fmt }} esperados</small>
               {% else %}<small>{{ c.lancamentos }} lançamento{{ '' if c.lancamentos == 1 else 's' }}</small>{% endif %}
+              {% if c.por_forma %}<small class="por-forma">{% for f in c.por_forma %}{{ f.nome }} {{ f.valor_fmt }}{{ ' · ' if not loop.last }}{% endfor %}</small>{% endif %}
             </div>
             <div class="tile">
               <span class="rotulo">Falta receber</span>
@@ -319,7 +321,7 @@
               {% if c.ultimas %}
               <ul class="entradas-lista">
                 {% for e in c.ultimas %}
-                <li><a href="{{ e.url }}">{{ e.nome }}</a><span class="valor">{{ e.valor_fmt }}</span><span class="meta">{{ e.numero }}ª parcela · {{ e.data_fmt }}</span></li>
+                <li><a href="{{ e.url }}">{{ e.nome }}</a><span class="valor">{{ e.valor_fmt }}</span><span class="meta">{{ e.numero }}ª parcela · {{ e.data_fmt }}{% if e.forma %} · {{ e.forma }}{% endif %}</span></li>
                 {% endfor %}
               </ul>
               {% else %}

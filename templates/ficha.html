@@ -122,6 +122,15 @@
   .nova-parcela-caixa > summary::-webkit-details-marker { display: none; }
   form.nova-parcela { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--borda); }
   form.nova-parcela label { width: 150px; }
+  .forma-pgto { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: .78rem; font-weight: 600; background: #eef1f5; color: #3a4658; white-space: nowrap; }
+  .forma-pgto.pix { background: #e3f4ee; color: #0b6b4f; }
+  .forma-pgto.dinheiro { background: #fdf3dc; color: #7a5200; }
+  .forma-pgto.vazia { background: none; padding: 1px 4px; color: var(--suave); font-weight: 400; }
+  @media (max-width: 420px) {                                        /* a coluna "Pago em" cabe sem rolar a tabela */
+    .painel-aba[data-painel="financeiro"] table.simples { font-size: .8rem; }
+    .painel-aba[data-painel="financeiro"] .simples th, .painel-aba[data-painel="financeiro"] .simples td { padding-left: 4px; padding-right: 4px; }
+    .painel-aba[data-painel="financeiro"] .simples .botao.pequeno { padding-left: 9px; padding-right: 9px; }
+  }
   @media (max-width: 640px) {
     .ficha-topo { padding: 16px; gap: 14px; }
     .ficha-topo .avatar.grande { width: 52px; height: 52px; font-size: 1.1rem; }
@@ -504,13 +513,14 @@
             {% if o.parcelas %}
               <div class="tabela-rolavel">
               <table class="simples">
-                <thead><tr><th>Nº</th><th>Data</th><th>Valor</th><th></th></tr></thead>
+                <thead><tr><th>Nº</th><th>Data</th><th>Valor</th><th>Pago em</th><th></th></tr></thead>
                 <tbody>
                   {% for parc in o.parcelas %}
                   <tr>
                     <td>{{ parc.numero }}ª</td>
                     <td>{{ parc.data | data }}</td>
                     <td class="num">{{ parc.valor | reais if parc.valor is not none else '—' }}</td>
+                    <td>{% if parc.forma_txt %}<span class="forma-pgto {{ parc.forma }}">{{ parc.forma_txt }}</span>{% else %}<span class="forma-pgto vazia" title="Parcela lançada antes de se registrar a forma de pagamento">—</span>{% endif %}</td>
                     <td>{% if pode('financeiro') %}<form method="post" action="{{ url_for('excluir_parcela', id=parc.id) }}"
                               data-confirmar="Excluir a {{ parc.numero }}ª parcela?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                           <button class="botao pequeno secundario">Excluir</button></form>{% endif %}</td>
@@ -531,6 +541,10 @@
                 <label>Data *<input type="date" name="data" required></label>
                 <label>Valor (R$)<input type="number" step="0.01" min="0" name="valor"
                        value="{{ '%.2f' % o.contribuicao_valor if o.contribuicao_valor else '' }}"></label>
+                <label>Pago em *<select name="forma" required>
+                    <option value="" selected disabled>Escolha</option>
+                    {% for chave, nome in formas_de_pagamento.items() %}<option value="{{ chave }}">{{ nome }}</option>{% endfor %}
+                  </select></label>
                 <button class="botao suave">Lançar</button>
               </form>
             </details>

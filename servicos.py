@@ -14,7 +14,7 @@ import ficha_saude
 import relatorio_alta
 import servico_social
 import versoes
-from modelos import (ENVELOPE_PENDENTE, ENVELOPE_RECEBIDO, STATUS, STATUS_TRIAGEM, EvolucaoSaude, FichaSaude,
+from modelos import (ENVELOPE_PENDENTE, ENVELOPE_RECEBIDO, FORMAS_DE_PAGAMENTO, STATUS, STATUS_TRIAGEM, EvolucaoSaude, FichaSaude,
                      Internacao, Parcela, Pessoa, RegistroEnfermagem, RelatorioAlta, RelatorioSocial, db)
 from prontuario import CONVENIO_A_DEFINIR, ler_data, ler_valor
 from relatorios import hoje_no_brasil
@@ -394,9 +394,12 @@ def lancar_parcela(internacao, form):
     data = ler_data(form.get("data"))
     if not data:
         return "Informe a data da parcela."
+    forma = (form.get("forma") or "").strip()
+    if forma not in FORMAS_DE_PAGAMENTO:
+        return "Informe se a parcela foi paga em dinheiro ou no Pix."
     numero = int(form.get("numero") or 0) or (max((p.numero for p in internacao.parcelas), default=0) + 1)
     valor = ler_valor(form.get("valor")) if form.get("valor") else None
-    internacao.parcelas.append(Parcela(numero=numero, data=data, valor=valor))
+    internacao.parcelas.append(Parcela(numero=numero, data=data, valor=valor, forma=forma))
     db.session.commit()
     return None
 

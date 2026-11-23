@@ -139,6 +139,11 @@ def migrar(db):
             db.session.execute(text("UPDATE convenios SET cor = :nova WHERE id = :id"), {"nova": nova, "id": id_})
     db.session.commit()
 
+    # 6k) a forma de pagamento da parcela (dinheiro ou Pix): as parcelas que já existem ficam sem forma (vazio), e a tela as mostra como "não informada"
+    if "forma" not in _colunas(db, "parcelas"):
+        db.session.execute(text("ALTER TABLE parcelas ADD COLUMN forma VARCHAR(10) NOT NULL DEFAULT ''"))
+        db.session.commit()
+
     # 6) o relatório de rejeição virou o parecer do acolhimento social: o que já foi escrito passa para lá
     _rejeicoes_para_o_acolhimento(db)
 

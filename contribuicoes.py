@@ -21,7 +21,7 @@ from sqlalchemy.orm import joinedload, selectinload
 import relatorios
 from documentos import N, Coluna, Documento, Paragrafo, Tabela, Texto, Titulo, fecho
 from identidade import atual as identidade
-from modelos import Internacao, Parcela, Pessoa, db
+from modelos import FORMAS_DE_PAGAMENTO, Internacao, Parcela, Pessoa, db
 from prontuario import MESES, fmt_data, fmt_reais, previsao_termino, somar_meses
 
 LINHAS_NA_HOME = 3                      # quantas entradas e quantos em atraso aparecem no Início (o resto está no relatório)
@@ -49,6 +49,18 @@ def _contribuintes():
     return sorted(internacoes, key=lambda i: relatorios._chave_de_ordem(i.pessoa.nome))
 
 
+def _por_forma(parcelas):
+    """[{"chave", "nome", "lancamentos", "valor"}] por forma de pagamento (Dinheiro, Pix e, se houver, "Não informada": as parcelas de antes de se registrar a forma), só das que têm
+    lançamento. `parcelas`: lista de Parcela."""
+    grupos = {}
+    for p in parcelas:
+        g = grupos.setdefault(p.forma if p.forma in FORMAS_DE_PAGAMENTO else "", {"lancamentos": 0, "valor": 0.0})
+        g["lancamentos"] += 1
+        g["valor"] += _valor(p)
+    ordem = [*FORMAS_DE_PAGAMENTO, ""]
+    return [{"chave": c, "nome": FORMAS_DE_PAGAMENTO.get(c, "Não informada"), **grupos[c]} for c in ordem if c in grupos]
+
+
 def _percentual(parte, todo):
     return min(100, round(parte * 100 / todo)) if todo else 0
 
@@ -71,7 +83,8 @@ def do_mes(hoje, maximo=LINHAS_NA_HOME):
         "contribuintes": len(contribuintes), "pagaram": len(contribuintes) - len(em_aberto),
         "a_receber": {"internos": len(em_aberto), "valor": falta, "valor_fmt": fmt_reais(falta)},
         "ultimas": [{"nome": i.pessoa.nome, "url": url_for("ficha", id=i.id, _anchor="aba-financeiro"), "valor_fmt": fmt_reais(_valor(p)) if p.valor is not None else "sem valor",
-                     "data_fmt": fmt_data(p.data), "numero": p.numero} for p, i in parcelas[:maximo]],
+                     "data_fmt": fmt_data(p.data), "numero": p.numero, "forma": p.forma_txt} for p, i in parcelas[:maximo]],
+        "por_forma": [{**f, "valor_fmt": fmt_reais(f["valor"])} for f in _por_forma([p for p, _ in parcelas])],
         "inadimplencia": inadimplencia(hoje, contribuintes, maximo),
     }
 
@@ -155,7 +168,7 @@ def resumo_do_ano(ano, hoje, anonimo=True):
                            key=lambda c: (-c["valor"], c["categoria"]))
     return {"ano": ano, "ate": min(hoje, date(ano, 12, 31)) if ano == hoje.year else date(ano, 12, 31), "total": sum(m["valor"] for m in meses),
             "lancamentos": len(parcelas), "pessoas": len(pessoas), "sem_valor": sum(1 for p, _ in parcelas if p.valor is None),
-            "meses": meses, "categorias": por_categoria, "internos": internos}
+            "meses": meses, "categorias": por_categoria, "formas": _por_forma([p for p, _ in parcelas]), "internos": internos}
 
 
 def aviso_do_ano(resumo):
@@ -194,6 +207,10 @@ def documento_do_ano(ano, hoje, emissor=None, anonimo=True):
             _tabela([Coluna("Categoria", LARGURA - 6400), Coluna("Internos", 1500, "centro"), Coluna("Lançamentos", 1900, "centro"), Coluna("Valor recebido", 3000, "direita")],
                     [[c["categoria"], c["pessoas"], c["lancamentos"], fmt_reais(c["valor"])] for c in r["categorias"]],
                     ["Total", r["pessoas"], r["lancamentos"], fmt_reais(r["total"])]),
+            Paragrafo([N("Por forma de pagamento")], antes=18, depois=6, unido_ao_proximo=True),
+            _tabela([Coluna("Pago em", LARGURA - 5000), Coluna("Lançamentos", 2000, "centro"), Coluna("Valor recebido", 3000, "direita")],
+                    [[f["nome"], f["lancamentos"], fmt_reais(f["valor"])] for f in r["formas"]],
+                    ["Total", r["lancamentos"], fmt_reais(r["total"])]),
             Paragrafo([N("Por interno")], antes=18, depois=6, unido_ao_proximo=True),
             _tabela([Coluna("Nº", 600, "centro"), Coluna("Interno", LARGURA - 600 - 2400 - 1500 - 2000), Coluna("Categoria", 2400), Coluna("Lançamentos", 1500, "centro"),
                      Coluna("Valor recebido", 2000, "direita")],

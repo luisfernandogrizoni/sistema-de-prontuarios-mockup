@@ -128,7 +128,7 @@ import totp
 import versoes
 from avisos import dias_de_espera, gerar_avisos, tempo_decorrido
 from banco import arquivo_ultimo_backup
-from modelos import (ENVELOPE_RECEBIDO, STATUS_INTERNACAO, STATUS_TRIAGEM, AvisoDispensado, Convenio, Funcionario,
+from modelos import (ENVELOPE_RECEBIDO, FORMAS_DE_PAGAMENTO, STATUS_INTERNACAO, STATUS_TRIAGEM, AvisoDispensado, Convenio, Funcionario,
                      Internacao, NivelAcesso, Parcela, Pessoa, Usuario, db)
 from migracoes import migrar
 from prontuario import (calcular_idade, faixas_do_particular, fmt_data, fmt_reais, gerar_docx, ler_data, montar_documento,
@@ -177,7 +177,7 @@ app.after_request(auditoria.depois_da_requisicao)       # leituras (auditoria.LE
 app.before_request(permissoes.exigir_permissao)     # depois do login: a rota pede uma permissão e a pessoa tem? (permissoes.REGRAS)
 app.after_request(autenticacao.cabecalhos_de_seguranca)
 app.after_request(csrf.cabecalhos)                  # política de conteúdo (CSP) e cabeçalhos que fecham o que o navegador não precisa
-app.jinja_env.globals.update(csrf_token=csrf.token, csp_nonce=csrf.nonce, dias_conectado=autenticacao.DURACAO_LEMBRADA.days)      # {{ csrf_token() }} nos formulários; {{ csp_nonce() }} nas tags de dentro da página
+app.jinja_env.globals.update(csrf_token=csrf.token, csp_nonce=csrf.nonce, dias_conectado=autenticacao.DURACAO_LEMBRADA.days, formas_de_pagamento=FORMAS_DE_PAGAMENTO)      # {{ csrf_token() }} nos formulários; {{ csp_nonce() }} nas tags de dentro da página
 autenticacao.registrar_comandos(app)
 contas.registrar_comandos(app)
 def _e_administrador():
@@ -1018,7 +1018,7 @@ def lancar_parcela(id):
     internacao = _buscar(Internacao, id)
     erro = servicos.lancar_parcela(internacao, request.form)
     if not erro:
-        auditoria.registrar("parcela.lancar", "internacao", id, internacao.pessoa_id)
+        auditoria.registrar("parcela.lancar", "internacao", id, internacao.pessoa_id, detalhe=internacao.parcelas[-1].forma_txt)      # a forma (Dinheiro ou Pix), não o valor
     flash(erro or "Parcela lançada.")
     return redirect(url_for("ficha", id=id) + "#parcelas")
 
