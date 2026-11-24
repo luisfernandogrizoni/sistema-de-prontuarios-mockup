@@ -9,7 +9,7 @@ O sistema acompanha uma instituição fictícia, a **Casa Exemplo**. Não há da
 
 Dados fictícios e a identidade genérica, *Casa Exemplo*.
 
-**Início**: indicadores, contribuições do mês e inadimplência, vagas por categoria (com quem chamar da lista de espera), agenda dos próximos dias e tratamentos próximos do fim.
+**Início**: indicadores, contribuições do mês (com o total recebido em Pix e em dinheiro) e inadimplência, vagas por categoria (com quem chamar da lista de espera), agenda dos próximos dias e tratamentos próximos do fim.
 
 ![Início](docs/imagens/inicio.png)
 
@@ -22,6 +22,10 @@ Dados fictícios e a identidade genérica, *Casa Exemplo*.
 ![Ficha](docs/imagens/ficha.png)
 
 ![Aba Imprimir](docs/imagens/imprimir.png)
+
+**Contribuições**: na aba *Financeiro* da ficha, as parcelas de cada pessoa, com a forma de pagamento (Pix ou dinheiro) escolhida na própria tabela.
+
+![Aba Financeiro](docs/imagens/financeiro.png)
 
 **No celular**: a folha A4 continua inteira, só desenhada menor, e a barra de abas ganha o botão ⌄ para as abas que não cabem.
 
@@ -50,7 +54,8 @@ Dados fictícios e a identidade genérica, *Casa Exemplo*.
 
 **Gestão**
 
-- Convênios cadastráveis, vagas por categoria, contribuições por faixa de valor, parcelas e aviso de inadimplência.
+- Convênios cadastráveis, vagas por categoria, contribuições por faixa de valor, parcelas com a forma de pagamento (dinheiro ou Pix) e aviso de inadimplência. O Início e o
+  relatório do ano mostram o total por forma de pagamento.
 - Relatórios (internos ativos por convênio, quem passou pela casa no ano, contribuições), com opção de mostrar só as iniciais.
 - Painel inicial com indicadores, avisos e agenda; busca, filtros e páginas feitos no servidor.
 - Importação de histórico a partir de planilha, com simulação antes de gravar e relatório do que entrou e do que ficou para conferir.
