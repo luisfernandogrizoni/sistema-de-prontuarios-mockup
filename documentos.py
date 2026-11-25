@@ -195,9 +195,13 @@ class Imagem:
     antes: float = 0
 
     @property
+    def da_identidade(self):
+        """True se a figura vem do pacote da identidade (a logo do timbre); senão ela está em static/."""
+        return identidade().caminho(self.arquivo).is_file()
+
+    @property
     def caminho(self):
-        propria = identidade().caminho(self.arquivo)
-        return propria if propria.is_file() else PASTA_ESTATICOS / self.arquivo
+        return identidade().caminho(self.arquivo) if self.da_identidade else PASTA_ESTATICOS / self.arquivo
 
 
 @dataclass

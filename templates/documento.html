@@ -149,7 +149,7 @@
         <div class="papel-de-quem">{{ b.papel }}</div>
       </div>
     {% elif b.tipo == 'imagem' %}
-      <div class="doc-imagem al-{{ b.alinhamento }}" style="margin-top: {{ b.antes }}pt;"><img src="{{ url_for('static', filename=b.arquivo) }}" alt="" style="width: {{ b.largura }}mm;"></div>
+      <div class="doc-imagem al-{{ b.alinhamento }}" style="margin-top: {{ b.antes }}pt;"><img src="{{ identidade.url(b.arquivo) if b.da_identidade else url_for('static', filename=b.arquivo) }}" alt="" style="width: {{ b.largura }}mm;"></div>
     {% elif b.tipo == 'colunas' %}
       <div class="doc-colunas" style="grid-template-columns: repeat({{ b.colunas | length }}, minmax(0, 1fr)); column-gap: {{ b.espaco / 20 }}pt; margin-top: {{ b.antes }}pt;">
         {% for coluna in b.colunas %}<div>{{ corpo(coluna, doc, largura) }}</div>{% endfor %}
